@@ -195,6 +195,8 @@
     if (op === 'harvest') {
       const full = ms.find(m => def(m).cat === 'trailer' && trailerFill(m) > 1e-6);
       if (full) return { ok: false, reason: def(full).name + ' stoi pełna na podwórzu (magazyn tymczasowy) — najpierw sprzedaj albo zmagazynuj plon' };
+      const loaded = ms.find(m => def(m).cat === 'trailer' && G.machines.cargoOf && G.machines.cargoOf(m) > 1e-6);
+      if (loaded) return { ok: false, reason: def(loaded).name + ' ma ładunek z pola — najpierw rozładuj pod silosem' };
       const trailers = ms.filter(m => def(m).cat === 'trailer');
       const tractors = ms.filter(m => m !== power && def(m).cat === 'tractor');
       const r = pairSets(trailers, tractors, helpers || [], pairs);
@@ -314,7 +316,7 @@
       const r = G.machines.ready(m.uid); if (!r.ok) return { ok: false, reason: def(m).name + ': ' + r.reason };
     }
     const waits = [];
-    for (const m of ownMachines) if (m && m.busy) waits.push(def(m).name);
+    for (const m of ownMachines) if (m && (m.busy || (G.machines.engaged && G.machines.engaged(m.uid)))) waits.push(def(m).name);
     for (const u of [spec.worker].concat(own.map(s => s.helper))) { const x = G.workers.get(u); if (x && x.busy) waits.push(x.name); }
     const wo = weatherOk();
     if (!wo.ok) waits.push('pogoda: ' + (wo.reason || 'nie da się pracować'));
@@ -378,12 +380,12 @@
       const rent = G.machines.catalogFor(op, Object.assign({ crop: cropOf(op, params, pid) }, params)).filter(d => d.rentPerDay > 0).map(d => ({ id: d.id, name: d.name, perDay: d.rentPerDay }));
       return fail('machine', 'Brak wolnej maszyny do zabiegu: ' + J.opName(op), { rent });
     }
-    const free = G.workers.list().filter(w => !w.busy && w.role !== 'barn').sort((a, b) => b.skills.field - a.skills.field || b.energy - a.energy);
+    const free = G.workers.list().filter(w => !w.busy && w.role !== 'barn' && !(G.workers.drivesActive && G.workers.drivesActive(w.uid))).sort((a, b) => b.skills.field - a.skills.field || b.energy - a.energy);
     if (!free.length) return fail('worker', 'Brak wolnego pracownika', { hire: G.workers.candidates().map(c => c.cid) });
     const c = combos[0];
     const spec = { ok: true, op, pid, params, machines: [c.tractor, c.implement].filter(Boolean), worker: free[0].uid, helpers: [], label: c.label };
     if (op === 'harvest') {
-      const freeOk = m => !m.busy && G.machines.ready(m.uid).ok && !spec.machines.includes(m.uid);
+      const freeOk = m => !m.busy && !(G.machines.engaged && G.machines.engaged(m.uid)) && G.machines.ready(m.uid).ok && !spec.machines.includes(m.uid) && !(G.machines.cargoOf && G.machines.cargoOf(m) > 1e-6);
       const trailers = G.machines.list().filter(m => def(m).cat === 'trailer' && freeOk(m) && trailerFill(m) <= 1e-6).sort((a, b) => def(b).cap - def(a).cap);
       const tractors = G.machines.list().filter(m => def(m).cat === 'tractor' && freeOk(m)).sort((a, b) => def(a).hp - def(b).hp);
       const drivers = free.slice(1);
@@ -586,6 +588,8 @@
         const r = G.machines.ready(uid);
         if (!r.ok) { j.reason = def(m).name + ': ' + r.reason; return; }
         if (m.busy && m.busy !== j.uid) { j.reason = 'Czeka na: ' + def(m).name; return; }
+        const eng = G.machines.engaged ? G.machines.engaged(uid) : null;
+        if (eng) { j.reason = 'Czeka: ' + eng; return; }
       }
       for (const wu of [j.worker].concat(j.helpers)) {
         if (!G.workers.get(wu)) { G.notify('❌ Zlecenie anulowane — brak pracownika', 'bad'); finish(j, 'cancelled'); return; }
@@ -607,7 +611,12 @@
       const fr = fillTanks(j);
       if (!fr.ok) { j.reason = fr.reason; j.fuelTick = G.S.tick; return; }
     }
-    // start
+    // start: kierowcy siedzący w maszynach spoza zlecenia wysiadają, obcy kierowcy wysiadają z maszyn zlecenia
+    if (!j.contractor && G.machines.unseat) {
+      const crew = [j.worker].concat(j.helpers);
+      for (const uid of j.machines) { const m = G.machines.get(uid); if (m.driver != null && !crew.includes(m.driver)) G.machines.unseat(m); }
+      for (const wu of crew) { const w = G.workers.get(wu); if (w && w.drives != null && !j.machines.includes(w.drives)) { const o = G.machines.get(w.drives); if (o && o.driver === w.uid) G.machines.unseat(o); else w.drives = null; } }
+    }
     for (const uid of j.machines) G.machines.get(uid).busy = j.uid;
     if (!j.contractor) for (const wu of [j.worker].concat(j.helpers)) { const w = G.workers.get(wu); if (w) w.busy = j.uid; }
     j.status = 'active'; j.started = G.S.tick; j.reason = '';
@@ -693,12 +702,12 @@
   function syncFleet(j) {
     if (j.contractor) return;
     const u = j.units.main, pm = G.machines.get(j.power);
-    if (u && pm && pm.busy === j.uid) G.machines.setPos(pm.uid, u.x, u.y, u.angle, u.mode !== 'park');
+    if (u && pm && pm.busy === j.uid && !G.machines.isManual(pm.uid)) G.machines.setPos(pm.uid, u.x, u.y, u.angle, u.mode !== 'park');
     for (const s of shuttles(j)) {
       const st = j.sets[s.k];
       if (!st || st.hired || st.retired) continue;
       const tm = G.machines.get(st.tractor);
-      if (tm && tm.busy === j.uid) G.machines.setPos(tm.uid, s.x, s.y, s.angle, s.phase !== 'park');
+      if (tm && tm.busy === j.uid && !G.machines.isManual(tm.uid)) G.machines.setPos(tm.uid, s.x, s.y, s.angle, s.phase !== 'park');
     }
   }
   // dojechał na miejsce postojowe: stanąć równo, odczepić i odstawić narzędzia/przyczepy (chyba że zlecenie z keepHitched)
@@ -836,6 +845,7 @@
   // plon: masowy (t) → zbiornik kombajnu albo przyczepa przy sieczkarni; reszta (np. bele) od razu do magazynu
   function handleOut(j, out, stored) {
     let tons = 0;
+    if (j.op !== 'harvest') stored = true;   // G.fields.workTile sam odkłada wynik (np. bele) do magazynu — nie dublujemy
     const rcv = j.kind === 'continuous' ? receiver(j) : null;
     for (const id in out) {
       const q = +out[id];
@@ -1066,9 +1076,18 @@
     j.want = false;
     for (const s of shuttles(j)) stepShuttle(j, s, dt);
   }
+  // jednostka po ręcznej jeździe: pozycja z floty, trasa od nowa do tego samego celu
+  function resyncUnit(j, u, m, pid) {
+    if (!u || !m) return;
+    u.x = m.x; u.y = m.y; u.angle = m.angle; u.w = null;
+    if (u.path && u.pi < u.path.length) { const end = u.path[u.path.length - 1]; u.path = route(tileOf(u), end, pid != null ? pid : j.pid, true); u.pi = 0; }
+    if (u.mode === 'hitch' || u.mode === 'unload') u.mode = 'drive';
+  }
   function stepShuttle(j, s, dt) {
     if (s.phase === 'park') return;
     const m = j.units.main, st = j.sets[s.k];
+    if (st && !st.hired && !st.retired && G.machines.isManual(st.tractor)) { s._man = true; return; }
+    if (s._man) { s._man = false; resyncUnit(j, s, G.machines.get(st.tractor), j.pid); if (s.phase === 'pick' && s.mode === 'hitch') s.timer = 0.01; }
     const mainGone = j.stage === 'home' || j.stage === 'parked';
     for (let guard = 0; guard < 200 && dt > 1e-9; guard++) {
       const sig = s.phase + s.pi + s.x.toFixed(3) + s.y.toFixed(3) + (s.timer || 0), before = dt;
@@ -1168,7 +1187,13 @@
     for (const j of G.S.jobs.list.slice()) {
       try {
         if (j.status === 'queued') tryStart(j);
-        if (j.status === 'active') { stepMain(j, dtH); if (j.status === 'active') { stepShuttles(j, dtH); if (j.status === 'active') syncFleet(j); } }
+        if (j.status === 'active') {
+          // gracz prowadzi maszynę zlecenia ręcznie → ta jednostka stoi (wstrzymana); po wyjściu wraca z miejsca, gdzie ją zostawił
+          const manMain = !j.contractor && G.machines.isManual(j.power);
+          if (manMain) { j._man = true; j.reason = 'Wstrzymane — prowadzisz ' + def(j.power).name; }
+          else { if (j._man) { j._man = false; j.reason = ''; resyncUnit(j, j.units.main, G.machines.get(j.power), j.stage === 'work' ? null : j.pid); } stepMain(j, dtH); }
+          if (j.status === 'active') { stepShuttles(j, dtH); if (j.status === 'active') syncFleet(j); }
+        }
       } catch (e) { console.error('[jobs]', e); }
     }
   });
@@ -1177,11 +1202,49 @@
     for (const j of G.S.jobs.list) if (j.fuelPending > 0 && j.fuelTick >= 0 && j.fuelTick < G.S.tick) flushFuel(j);
   });
 
+  // ===================== DOŁĄCZENIE ZESTAWU DO ZBIORU =====================
+  // rozkaz „Odbieraj od kombajnu” dla kombajnu w zleceniu: ciągnik z przyczepą (1–2) i kierowca stają się kolejnym zestawem transportowym
+  J.addSet = function (jobUid, tractorUid, helperUid) {
+    const j = J.get(jobUid);
+    if (!j || j.status !== 'active' || j.op !== 'harvest') return { ok: false, reason: 'Zbiór nie trwa' };
+    if (j.contractor) return { ok: false, reason: 'Usługa kontraktora ma własne przyczepy' };
+    if (j.stage === 'home' || j.stage === 'parked' || j.cancelled) return { ok: false, reason: 'Kombajn kończy pracę' };
+    const tm = G.machines.get(tractorUid);
+    if (!tm || def(tm).cat !== 'tractor') return { ok: false, reason: 'Potrzebny ciągnik z przyczepą' };
+    if (tm.busy) return { ok: false, reason: 'Ciągnik pracuje w innym zleceniu' };
+    const hs = G.machines.hitched(tm.uid), trs = hs.filter(h => def(h).cat === 'trailer');
+    if (!trs.length || trs.length !== hs.length) return { ok: false, reason: 'Na zaczepie muszą być same przyczepy' };
+    if (trs.some(t => trailerFill(t) > 1e-6)) return { ok: false, reason: 'Przyczepa pełna (magazyn tymczasowy) — najpierw opróżnij' };
+    const r = G.machines.ready(tm.uid); if (!r.ok) return r;
+    const w = G.workers.get(helperUid);
+    if (!w) return { ok: false, reason: 'Brak kierowcy' };
+    if (w.busy && w.busy !== j.uid) return { ok: false, reason: w.name + ' pracuje w innym zleceniu' };
+    if (G.machines.isManual(tm.uid) && G.drive) G.drive.release();
+    if (tm.order) G.machines.stopOrder(tm.uid);
+    if (w.drives != null) { const o = G.machines.get(w.drives); if (o && o.driver === w.uid) G.machines.unseat(o); else w.drives = null; }
+    G.machines.unseat(tm);
+    const st = { tractor: tm.uid, trailer: trs[0].uid, trailer2: trs[1] ? trs[1].uid : null, helper: w.uid, tid: tm.id, rid: trs[0].id, rid2: trs[1] ? trs[1].id : null, hired: false, joined: true };
+    j.sets.push(st);
+    j.machines.push(tm.uid, ...trs.map(t => t.uid));
+    j.helpers.push(w.uid);
+    for (const m of [tm].concat(trs)) m.busy = j.uid;
+    w.busy = j.uid; tm.driver = w.uid;
+    const sh = unitAt(tm);
+    sh.k = j.sets.length - 1; sh.load = 0; sh.prod = {};
+    // ładunek z pola, który już jest na przyczepach, jedzie dalej w zestawie
+    for (const t of trs) if (t.cargo) { for (const id in t.cargo) { sh.prod[id] = (sh.prod[id] || 0) + t.cargo[id]; sh.load += t.cargo[id]; } t.cargo = null; }
+    sh.cap = setCap(st); sh.spd = st.trailer2 ? DOUBLE_SPD : 1;
+    sh.phase = 'out'; sh.path = route(tileOf(sh), standbyOf(j), j.pid, true); sh.pi = 0;
+    j.units.shuttles.push(sh);
+    return { ok: true, set: st };
+  };
+
   // ===================== DLA GRAFIKI =====================
   // [{ x, y, angle, parts:[{model, color, axle?, cap?, fill?, hitchLen?}], working, dust, lights,
   //    kind: 'own'|'contractor'|'transport'|'parked'|'implement', unit: 'main'|'shuttle'|'parked'|'order'|'manual'|'implement',
   //    uid (własne), jobUid, label, waiting, reason, fill (0..1), unloading?, auger?: 'in'|'out', receiving?, inGarage?, broken?,
   //    driver (imię kierowcy | null), manual (prowadzi gracz), lowered (narzędzie opuszczone), target {x,y} (cel rozkazu/odwozu) }]
+  // Części własnych zestawów mają uid i lowered; przy ręcznej jeździe także x, y, angle (przeguby przyczep — rysuj w tych pozycjach).
   // Źródłem pozycji WŁASNYCH maszyn jest G.S.machines (flota); zlecenia dokładają flagi (praca, rura, ładunek). Kontraktorzy i wynajęty
   // transport nie należą do floty — rysowani z jednostek zlecenia.
   J.vehicles = function () {
@@ -1229,7 +1292,7 @@
         broken: !!m.broken, inGarage: m.parked === 'garage' && !m.busy && !m.order && manualUid !== m.uid, target: null, working: false, dust: false, waiting: false, reason: '', fill: 0 };
       if (!G.machines.isPower(d)) {
         // luźno stojące narzędzie / przyczepa
-        const fillT = d.cat === 'trailer' && d.cap ? Math.min(1, trailerFill(m) / d.cap) : 0;
+        const fillT = d.cat === 'trailer' && d.cap ? Math.min(1, (trailerFill(m) + cargoOf(m)) / d.cap) : 0;
         const part = d.cat === 'trailer' ? trailerPart(d, d.color, fillT) : { model: d.model, color: d.color };
         out.push(Object.assign(base, { parts: [part], kind: 'implement', unit: 'implement', label: d.name + (fillT > 0 ? ' — pełna (magazyn tymczasowy)' : ''), fill: fillT, lights: false, inGarage: base.inGarage && fillT <= 0 }));
         continue;
@@ -1245,18 +1308,33 @@
         isMain = j.power === m.uid;
         if (!isMain) s = shuttles(j).find(x => j.sets[x.k] && j.sets[x.k].tractor === m.uid) || null;
       }
-      // ładunek przyczep w zestawie: ze zlecenia (shuttle) albo z własnego fill
+      // ładunek przyczep w zestawie: ze zlecenia (shuttle) albo z własnego fill + ładunku w drodze (cargo)
       let left = s ? s.load : -1;
+      const isMan = manualUid === m.uid;
+      const art = isMan && G.machines.parts ? G.machines.parts(m.uid) : null;   // przeguby przy ręcznej jeździe
       for (const hm of hs) {
         const hd = def(hm);
+        let part;
         if (hd.cat === 'trailer') {
           let f = 0;
           if (left >= 0) { const q = Math.min(left, hd.cap || 0); left -= q; f = hd.cap ? q / hd.cap : 0; }
-          else f = hd.cap ? Math.min(1, trailerFill(hm) / hd.cap) : 0;
-          parts.push(trailerPart(hd, hd.color, f));
-        } else parts.push({ model: hd.model, color: hd.color });
+          else f = hd.cap ? Math.min(1, (trailerFill(hm) + cargoOf(hm)) / hd.cap) : 0;
+          part = trailerPart(hd, hd.color, f);
+        } else part = { model: hd.model, color: hd.color };
+        part.uid = hm.uid; part.lowered = !!hm.lowered;
+        const ap = art && art.find(p => p.uid === hm.uid);
+        if (ap) { part.x = ap.x; part.y = ap.y; part.angle = ap.angle; }
+        parts.push(part);
       }
-      if (j && isMain) {
+      v.lowered = !!m.lowered || hs.some(h => h.lowered);
+      if (isMan) {
+        const st = G.drive.state();
+        Object.assign(v, { kind: 'own', unit: 'manual', label: 'Prowadzisz: ' + d.name, lights: dark, working: !!(st && st.working), dust: !!(st && st.working) && !wet && !!DUSTY[st.op], fill: st ? st.fill || 0 : 0 });
+        if (st && st.auger) v.auger = st.auger;
+        if (st && st.unloading) v.unloading = true;
+        if (st && st.receiving) v.receiving = true;
+        if (j) v.reason = 'Zlecenie wstrzymane — prowadzisz';
+      } else if (j && isMain) {
         const u = j.units.main;
         Object.assign(v, mainFlags(j, u, d), { kind: 'own', unit: 'main', label: J.opName(j.op) + (j.stage === 'fetch' ? ' — po narzędzie' : ''), lights: dark && u.mode !== 'wait' });
         v.dust = v.working && !!DUSTY[j.op] && !wet;
@@ -1268,21 +1346,21 @@
         Object.assign(v, { kind: 'own', unit: 'order', label: o.label || 'Rozkaz', waiting: !!o.wait, reason: o.reason || '', lights: dark, working: !!o.working, dust: !!o.working && !wet });
         if (o.target != null) v.target = { x: G.tx(o.target) + 0.5, y: G.ty(o.target) + 0.5 };
         if (hs.length && hs.every(x => def(x).cat === 'trailer')) v.fill = fillRatio(hs);
-      } else if (manualUid === m.uid) {
-        const st = G.drive.state();
-        Object.assign(v, { kind: 'own', unit: 'manual', label: 'Prowadzisz: ' + d.name, lights: dark, working: !!(st && st.working), dust: !!(st && st.working) && !wet, fill: st ? st.fill || 0 : 0 });
-        if (st && st.auger) v.auger = st.auger;
-        if (st && st.unloading) v.unloading = true;
+        if (o.type === 'follow' && o.working) v.receiving = true;
+        if (o.type === 'auger') { v.auger = 'out'; v.unloading = true; }
+        if (o.type === 'unload' && o.phase === 'dump') v.unloading = true;
       } else {
         if (hs.length && hs.every(x => def(x).cat === 'trailer')) v.fill = fillRatio(hs);
         if (m.parked === 'field') v.label += ' — stoi na polu';
       }
-      if (d.cat === 'combine' && !v.fill && m.fill) v.fill = Math.min(1, trailerFill(m) / (d.cap || 1));
+      // zbiornik kombajnu poza zleceniem (ręczny zbiór): ładunek w drodze
+      if (!(j && isMain) && G.machines.tankHolder) { const th = G.machines.tankHolder(m.uid); if (th && cargoOf(th) > 0) v.fill = Math.min(1, cargoOf(th) / (G.machines.tankCap(th) || 1)); }
       out.push(v);
     }
     return out;
   };
-  const fillRatio = hs => { let c = 0, q = 0; for (const h of hs) { c += def(h).cap || 0; q += trailerFill(h); } return c ? Math.min(1, q / c) : 0; };
+  const cargoOf = m => (G.machines.cargoOf ? G.machines.cargoOf(m) : 0);
+  const fillRatio = hs => { let c = 0, q = 0; for (const h of hs) { c += def(h).cap || 0; q += trailerFill(h) + cargoOf(h); } return c ? Math.min(1, q / c) : 0; };
   const trailerPart = (rd, color, fill) => ({ model: rd.model, color, axle: rd.axle || null, cap: rd.cap || 0, fill: Math.max(0, Math.min(1, fill || 0)), hitchLen: rd.hitchLen || 0.7 });
   function mainFlags(j, u, pd) {
     const working = j.stage === 'work' && u.mode === 'work';
