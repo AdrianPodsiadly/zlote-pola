@@ -11,7 +11,8 @@
 // Pojemności są ABSOLUTNE dla danego poziomu (nie sumują się z poprzednimi poziomami tego samego budynku).
 // Klucze pul magazynowych (G.BUILDING_POOLS): 'zboże' (t), 'bele' (siano + słoma, bel), 'sianokiszonka' (bel), 'kiszonka' (t),
 // 'ziemniaki' (t), 'buraki' (t), 'nawozy' (t), 'środki ochrony' (l), 'nasiona' (t), 'obornik' (t), 'gnojowica' (m3), 'mleko' (l),
-// 'mleko_kozie' (l), 'jaja' (szt), 'ON' (l), 'produkty' (wełna + miód, kg), 'warzywa' (kg).
+// 'mleko_kozie' (l), 'jaja' (szt), 'ON' (l), 'produkty' (wełna + miód, kg), 'warzywa' (kg),
+// 'pasza' (t) — zbiorniki paszowe tylko na pasza_tresciwa; nadwyżka paszy ponad zbiorniki zajmuje pulę 'zboże'.
 //
 // Czas: rok gry = 72 dni, więc czasy budowy to ok. 1/5 czasu rzeczywistego (obora ~6 mies. → 30 dni gry).
 // Ceny: realia polskie 2026 (netto, z robocizną), utrzymanie ≈ 1,5% wartości rocznie (podatek, ubezpieczenie, drobne naprawy) / 72 dni.
@@ -22,6 +23,7 @@ window.G = window.G || {};
 
   // Pule magazynowe: jednostka, nazwa, pojemność bazowa bez budynku (pod plandeką / pryzma / kopiec), straty dzienne nadwyżki ponad pojemność krytą
   G.BUILDING_POOLS = {
+    'pasza':          { name: 'Zbiorniki paszowe (pasza treściwa)', unit: 't', base: 0, only: 'pasza_tresciwa' },
     'zboże':          { name: 'Ziarno i pasze treściwe', unit: 't',    base: 20,  loss: 0.004, rainLoss: 0.012, baseNote: 'pod plandeką na podwórzu' },
     'bele':           { name: 'Siano i słoma',           unit: 'bela', base: 40,  loss: 0.003, rainLoss: 0.01,  baseNote: 'sterta pod gołym niebem' },
     'sianokiszonka':  { name: 'Sianokiszonka (owijane)', unit: 'bela', base: 400, loss: 0.0005 },
@@ -84,8 +86,8 @@ window.G = window.G || {};
           capacity: { 'bele': 320, 'zboże': 60, 'nasiona': 10, 'nawozy': 30, 'środki ochrony': 300, 'ziemniaki': 40 },
           desc: 'Betonowa posadzka, wydzielony magazyn ś.o.r.' },
         { name: 'Hala magazynowa stalowa', price: 420000, buildDays: 16,
-          capacity: { 'bele': 700, 'zboże': 150, 'nasiona': 20, 'nawozy': 60, 'środki ochrony': 500, 'ziemniaki': 80 },
-          desc: 'Duża hala — bele, ziarno w boksach, nawozy w big-bagach.' }
+          capacity: { 'bele': 700, 'zboże': 80, 'nasiona': 20, 'nawozy': 60, 'środki ochrony': 500, 'ziemniaki': 80 },
+          desc: 'Duża hala — bele, trochę ziarna w boksie, nawozy w big-bagach.' }
       ]
     }),
 
@@ -154,25 +156,53 @@ window.G = window.G || {};
       ]
     }),
 
-    silo: B({
-      name: 'Silos zbożowy', cat: 'magazyn', size: [1, 1], model: 'silo', color: '#c0c4c8',
-      desc: 'Ziarno bez strat. Można postawić kilka silosów.',
+    // Silosy: wspólny model grafiki 'silo', rozróżniany polem variant: 'hopper' (lejowy, smukły na nogach), 'flat' (płaskodenny, na fundamencie),
+    // 'feed' (mały zbiornik paszowy przy budynku inwentarskim). Pojemności w tonach, ceny z montażem (2026).
+    silo_hopper: B({
+      name: 'Silos zbożowy lejowy', cat: 'magazyn', size: [1, 1], model: 'silo', variant: 'hopper', color: '#c9cdd1',
+      desc: 'Zbiornik metalowy na stopach z lejem — pełne, łatwe opróżnianie grawitacyjne. Droższy za tonę, ale ziarno bez strat. Można postawić kilka.',
       levels: [
-        { name: 'Silos 100 t', price: 85000, buildDays: 4, capacity: { 'zboże': 100 }, desc: 'Silos lejowy z przenośnikiem.' },
-        { name: 'Silos 250 t', price: 95000, buildDays: 4, capacity: { 'zboże': 250 }, desc: 'Większy silos płaskodenny.' },
-        { name: 'Silos 500 t z suszarnią', price: 210000, buildDays: 6, capacity: { 'zboże': 500 }, dryer: true, desc: 'Suszarnia i czyszczalnia ziarna.' }
+        { name: 'Silos lejowy 40 t', price: 25000, buildDays: 2, capacity: { 'zboże': 40 }, desc: 'Mały silos na stopach z lejem 45°.' },
+        { name: 'Silos lejowy 61 t', price: 16000, buildDays: 2, capacity: { 'zboże': 61 }, desc: 'Wymiana na większy zbiornik (łącznie ~41 tys. zł).' },
+        { name: 'Silos lejowy 108 t', price: 14000, buildDays: 3, capacity: { 'zboże': 108 }, desc: 'Łącznie ~55 tys. zł.' },
+        { name: 'Silos lejowy 194 t', price: 27000, buildDays: 3, capacity: { 'zboże': 194 }, desc: 'Łącznie ~82 tys. zł, przenośnik kubełkowy.' },
+        { name: 'Silos lejowy 312 t z napowietrzaniem', price: 48000, buildDays: 4, capacity: { 'zboże': 312 }, desc: 'Łącznie ~130 tys. zł, wentylator i sonda temperatury.' }
+      ]
+    }),
+
+    silo_flat: B({
+      name: 'Silos zbożowy płaskodenny', cat: 'magazyn', size: [2, 2], model: 'silo', variant: 'flat', color: '#b8bdc2',
+      desc: 'Na betonowym fundamencie, z blachy falistej — tańszy za tonę i dużo większy. Opróżnianie przenośnikiem zgarniającym.',
+      levels: [
+        { name: 'Silos płaskodenny 100 t', price: 32000, buildDays: 4, capacity: { 'zboże': 100 }, desc: 'Fundament + zbiornik 100 t.' },
+        { name: 'Silos płaskodenny 200 t', price: 22000, buildDays: 3, capacity: { 'zboże': 200 }, desc: 'Łącznie ~54 tys. zł.' },
+        { name: 'Silos 500 t z wentylacją', price: 46000, buildDays: 5, capacity: { 'zboże': 500 }, desc: 'Podłoga napowietrzająca, łącznie ~100 tys. zł.' },
+        { name: 'Silos 1000 t z wentylacją', price: 90000, buildDays: 6, capacity: { 'zboże': 1000 }, desc: 'Łącznie ~190 tys. zł.' },
+        { name: 'Silos 2500 t z osuszaniem', price: 210000, buildDays: 8, capacity: { 'zboże': 2500 }, dryer: true, desc: 'Osuszanie ziarna, łącznie ~400 tys. zł.' },
+        { name: 'Silos 5000 t z suszarnią', price: 350000, buildDays: 10, capacity: { 'zboże': 5000 }, dryer: true, desc: 'Baza zbożowa, łącznie ~750 tys. zł.' }
+      ]
+    }),
+
+    feed_bin: B({
+      name: 'Zbiornik paszowy', cat: 'magazyn', size: [1, 1], model: 'silo', variant: 'feed', color: '#d4d8db',
+      desc: 'Mały silos lejowy przy oborze/chlewni/kurniku — tylko na paszę treściwą (mieszankę). Pasza nie zajmuje miejsca w silosach zbożowych.',
+      levels: [
+        { name: 'Zbiornik paszowy 8 t', price: 8500, buildDays: 1, capacity: { 'pasza': 8 }, desc: 'Z przenośnikiem ślimakowym do budynku.' },
+        { name: 'Zbiornik paszowy 10,7 t', price: 1500, buildDays: 1, capacity: { 'pasza': 10.7 }, desc: 'Łącznie ~10 tys. zł.' },
+        { name: 'Zbiornik paszowy 16 t', price: 4500, buildDays: 1, capacity: { 'pasza': 16 }, desc: 'Łącznie ~14,5 tys. zł.' },
+        { name: 'Zbiornik paszowy 25 t', price: 6500, buildDays: 2, capacity: { 'pasza': 25 }, desc: 'Łącznie ~21 tys. zł.' }
       ]
     }),
 
     granary: B({
       name: 'Magazyn płaski / spichlerz', cat: 'magazyn', size: [3, 2], model: 'granary', color: '#9aa0a6',
-      desc: 'Duży magazyn ziarna, nawozów, nasion i ziemniaków (przechowalnia).',
+      desc: 'Hala wielofunkcyjna: ziarno luzem w przegrodach, nawozy, nasiona, ziemniaki — część hali może służyć jako garaż.',
       levels: [
-        { name: 'Magazyn płaski 400 t', price: 520000, buildDays: 16, capacity: { 'zboże': 400, 'nasiona': 30, 'nawozy': 60, 'ziemniaki': 150, 'środki ochrony': 200 },
+        { name: 'Magazyn płaski 400 t', price: 520000, buildDays: 16, slots: 2, capacity: { 'zboże': 400, 'nasiona': 30, 'nawozy': 60, 'ziemniaki': 150, 'środki ochrony': 200 },
           desc: 'Hala z betonową posadzką i ścianami oporowymi.' },
-        { name: 'Magazyn płaski 800 t', price: 380000, buildDays: 12, capacity: { 'zboże': 800, 'nasiona': 60, 'nawozy': 120, 'ziemniaki': 300, 'środki ochrony': 300 },
+        { name: 'Magazyn płaski 800 t', price: 380000, buildDays: 12, slots: 3, capacity: { 'zboże': 800, 'nasiona': 60, 'nawozy': 120, 'ziemniaki': 300, 'środki ochrony': 300 },
           desc: 'Dobudowana nawa.' },
-        { name: 'Magazyn 1500 t z wentylacją', price: 600000, buildDays: 14, capacity: { 'zboże': 1500, 'nasiona': 100, 'nawozy': 200, 'ziemniaki': 600, 'środki ochrony': 500 },
+        { name: 'Magazyn 1500 t z wentylacją', price: 600000, buildDays: 14, slots: 4, capacity: { 'zboże': 1500, 'nasiona': 100, 'nawozy': 200, 'ziemniaki': 600, 'środki ochrony': 500 },
           desc: 'Aktywna wentylacja podłogowa, przechowalnia ziemniaków.' }
       ]
     }),
