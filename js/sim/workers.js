@@ -3,7 +3,8 @@
 // Stan: G.S.workers = [{ uid, name, age, gender ('m'|'k'), skills: {field, mech, animals} (1..5), xp: {field, mech, animals} (godziny),
 //                        wage (zł/dzień gry — koszt pracodawcy), monthly (zł brutto/mies.), energy 0..1, busy: jobUid|null,
 //                        contract: 'owner'|'etat'|'sezon', until (tick końca umowy sezonowej), hiredAt, paidUntil (tick),
-//                        role: 'any'|'field'|'barn', barnH (godziny obory dziś), hours (przepracowane), isPlayer }]
+//                        role: 'any'|'field'|'barn', barnH (godziny obory dziś), hours (przepracowane), isPlayer,
+//                        drives: uid maszyny, w której siedzi (rozkaz / przydział / ręczna jazda gracza) | null }]
 //       G.S.workerPool = { cands: [kandydaci], next: tick odświeżenia, barn: { need, covered } }
 //
 // Płace: etat 4500–7000 zł brutto/mies. + ~20 % ZUS pracodawcy; miesiąc gry = 6 dni → stawka dzienna = brutto × 1,2 / 6
@@ -47,10 +48,26 @@
     const w = W.get(uid);
     if (!w) return { ok: false, reason: 'Brak pracownika' };
     if (w.busy && w.busy !== jobUid) return { ok: false, reason: w.name + ' — zajęty (zlecenie #' + w.busy + ')' };
+    // siedzi w maszynie, która wykonuje rozkaz albo jest prowadzona ręcznie (a ta maszyna nie należy do zlecenia)
+    const dm = drivesActive(w);
+    if (dm) {
+      const j = jobUid != null && G.jobs && G.jobs.get ? G.jobs.get(jobUid) : null;
+      if (!(j && (j.machines || []).includes(dm.uid) && !G.machines.isManual(dm.uid))) return { ok: false, reason: w.name + ' — ' + (G.machines.isManual(dm.uid) ? 'prowadzi ' : 'jedzie: ') + G.machines.label(dm.uid) };
+    }
     if (inBarn(w)) return { ok: false, reason: w.name + ' — obrządek w oborze' };
     if (w.energy < (starting ? MIN_START : MIN_WORK) || (w._resting && w.energy < RESUME)) return { ok: false, reason: w.name + ' — odpoczywa (zmęczenie)' };
     return { ok: true };
   };
+  // maszyna, w której pracownik siedzi i która jest w ruchu (rozkaz / ręczna jazda) | null
+  function drivesActive(w) {
+    if (w.drives == null || !G.machines) return null;
+    const m = G.machines.get(w.drives);
+    if (!m || m.driver !== w.uid) return null;
+    return (m.order || (G.machines.isManual && G.machines.isManual(m.uid))) ? m : null;
+  }
+  // wolny do nowej pracy (zlecenie / rozkaz): nie w zleceniu, nie prowadzi, nie w oborze
+  W.isFree = function (uid) { const w = W.get(uid); return !!w && !w.busy && !drivesActive(w) && !inBarn(w); };
+  W.drivesActive = uid => { const w = W.get(uid); return w ? drivesActive(w) : null; };
   function inBarn(w) {
     if (!w.barnH) return false;
     const h = G.date().hour + (G.hourFrac || 0), half = w.barnH / 2;
@@ -136,6 +153,8 @@
     if (!w) return { ok: false, reason: 'Brak pracownika' };
     if (w.isPlayer) return { ok: false, reason: 'Gospodarza nie da się zwolnić 🙂' };
     if (w.busy) return { ok: false, reason: 'Pracuje w zleceniu — najpierw je zakończ lub anuluj' };
+    if (drivesActive(w)) return { ok: false, reason: 'Prowadzi maszynę (rozkaz) — najpierw daj Stop' };
+    if (w.drives != null && G.machines && G.machines.unseat) { const m = G.machines.get(w.drives); if (m && m.driver === w.uid) G.machines.unseat(m); }
     const amt = settle(w, 'Rozliczenie końcowe: ' + w.name);
     G.S.workers = G.S.workers.filter(x => x !== w);
     G.notify('👋 ' + w.name + ' odchodzi (rozliczenie ' + G.fmtMoney(amt) + ')', 'info');
@@ -226,6 +245,9 @@
       if (w.paidUntil == null) w.paidUntil = S.tick;
       if (!w.role) w.role = 'any';
       w._worked = 0;
+      // siedzi w maszynie tylko, jeśli maszyna to potwierdza
+      if (w.drives != null) { const m = (S.machines || []).find(x => x.uid === w.drives); if (!m || m.driver !== w.uid) w.drives = null; }
+      if (w.drives === undefined) w.drives = null;
     }
     if (!S.workerPool || !Array.isArray(S.workerPool.cands)) { S.workerPool = { cands: [], next: 0, barn: { need: 0, covered: 0 } }; refresh(); }
     if (!S.workerPool.barn) S.workerPool.barn = { need: 0, covered: 0 };
