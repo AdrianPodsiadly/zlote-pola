@@ -12,12 +12,12 @@
   const C = G.CFG, T = G.T, W = C.W, H = C.H, ISO = G.iso, SP = G.sprites;
   const TR = G.terrain = {};
   const CH = 8;                               // kafli na kawałek
-  const PAD_TOP = 96;                         // px świata zapasu nad kawałkiem (drzewa, kukurydza, domy)
-  const PAD_SIDE = 40;
+  const PAD_TOP = 60;                         // px świata zapasu nad kawałkiem (drzewa, kukurydza, domy)
+  const PAD_SIDE = 26;
   const CW = CH * ISO.TW, CHH = CH * ISO.TH;  // rozmiar rombu kawałka w px świata (zoom 1)
   const chunks = new Map();                   // klucz level:cx:cy → { g, d, scale, X0, Y0, hash, look, lights:[], last }
   let totalPx = 0;
-  const MAX_PX = 44e6;
+  const MAX_PX = 40e6;
   let lookKey = '', lookInfo = null, waterTiles = null, fieldDir = null, hashAt = 0;
   const shade = SP.shade, mix = SP.mix;
 
@@ -198,6 +198,10 @@
         let gc = shade(green, 0.72);
         if (lookc && (ph === 'ripe' || g > 0.7)) gc = mix(gc, shade(lookc.ripe, 0.8), ph === 'ripe' ? 1 : (g - 0.7) / 0.3);
         c = mix(soil, gc, cover * 0.85);
+        if (lookc && lookc.style === 'rapeseed' && lookc.flower && ph === 'growing' && g > 0.42 && g < 0.72) {
+          const fl = Math.min(1, Math.min(g - 0.42, 0.72 - g) / 0.06);
+          c = mix(c, mix(lookc.flower, '#9ab83a', 0.25), 0.8 * fl);
+        }
         break;
       }
       default: c = base;
@@ -288,7 +292,10 @@
             const rr = Math.max(1.2, (style === 'beet' ? 3.6 : style === 'root' ? 3.2 : 2.8) * g);
             ctx.moveTo(p[0] + rr, p[1]); ctx.arc(p[0], p[1] - (style === 'rapeseed' ? jh * 0.5 : jh * 0.25), rr, 0, 7);
             if (style === 'rapeseed' && g > 0.1) { ctx.moveTo(p[0], p[1]); ctx.lineTo(p[0], p[1] - jh * 0.6); }
-            if (lookc.flower && ((style === 'rapeseed' && g > 0.42 && g < 0.72) || (style === 'root' && g > 0.45 && g < 0.6))) (flowers = flowers || []).push([p[0], p[1] - (style === 'rapeseed' ? jh * 0.9 : jh * 0.5)]);
+            if (lookc.flower && ((style === 'rapeseed' && g > 0.42 && g < 0.72) || (style === 'root' && g > 0.45 && g < 0.6))) {
+              if (style === 'rapeseed') for (let q = 0; q < 5; q++) (flowers = flowers || []).push([p[0] + (hsh(i, r * 50 + k * 5 + q) - 0.5) * 9, p[1] - jh * (0.75 + hsh(i, r * 60 + k * 5 + q) * 0.35) + (hsh(i, r * 70 + k * 5 + q) - 0.5) * 4]);
+              else (flowers = flowers || []).push([p[0], p[1] - jh * 0.5]);
+            }
             break;
           }
           case 'sunflower':
@@ -307,7 +314,12 @@
       if (style === 'maize' && g > 0.55) { ctx.fillStyle = mix('#d9c37a', light, 0.4); for (let k = 0; k < per; k++) { const t = (k + 0.5) / per + (hsh(i, r * 13 + k) - 0.5) * 0.06, p = dir === 'x' ? pt(X, Y, t, f) : pt(X, Y, f, t); const jh = h * (0.85 + hsh(i, r * 7 + k + 100) * 0.3); ctx.fillRect(p[0] - 1, p[1] - jh - 2, 2, 3); } }
       if (flowers) {
         if (style === 'sunflower') { for (const q of flowers) { ctx.fillStyle = q[2] > 0.5 ? '#8a6a2a' : '#f2c82a'; ctx.beginPath(); ctx.arc(q[0], q[1], 2.6, 0, 7); ctx.fill(); ctx.fillStyle = '#5a3a1a'; ctx.beginPath(); ctx.arc(q[0], q[1], 1.2, 0, 7); ctx.fill(); } }
-        else { ctx.fillStyle = style === 'root' ? '#f4f0ff' : lookc.flower; for (const q of flowers) { ctx.beginPath(); ctx.arc(q[0], q[1], style === 'root' ? 1.1 : 2.2, 0, 7); ctx.fill(); } }
+        else if (style === 'rapeseed') {
+          ctx.fillStyle = shade(lookc.flower, 0.85); for (const q of flowers) ctx.fillRect(q[0] - 0.9, q[1] + 0.4, 2, 1.4);
+          ctx.fillStyle = lookc.flower; for (const q of flowers) ctx.fillRect(q[0] - 1, q[1] - 1, 2, 1.6);
+          ctx.fillStyle = '#fff59a'; for (let q = 0; q < flowers.length; q += 3) ctx.fillRect(flowers[q][0] - 0.5, flowers[q][1] - 1.2, 1, 0.8);
+        }
+        else { ctx.fillStyle = '#f4f0ff'; for (const q of flowers) { ctx.beginPath(); ctx.arc(q[0], q[1], 1.1, 0, 7); ctx.fill(); } }
       }
     }
     weeds(ctx, i, X, Y, ts, lk);
@@ -401,7 +413,7 @@
           const x = i % W, y = (i / W) | 0;
           const roadS = y < H - 1 && S.map.t[i + W] === T.ASPHALT, roadN = y > 0 && S.map.t[i - W] === T.ASPHALT;
           const ang = roadS ? 0 : roadN ? Math.PI : (seed & 1 ? Math.PI / 2 : 0);
-          const e = SP.get('cottage', ang, { seed, zoom: chunk.level, exactAngle: true });
+          const e = SP.get('cottage', ang, { seed, zoom: chunk.level, exactAngle: true, snow: lk.snow >= 1 });
           const cx = X, cy = Y + 16;
           const k = 1 / e.scale;
           ctx.drawImage(e.c, cx - e.ox * k, cy - e.oy * k, e.w * k, e.h * k);
@@ -428,8 +440,9 @@
       if (np === pid) continue;
       const a = n[2][0], b = n[2][1];
       // miedza — pas trawy
-      ctx.strokeStyle = mix(lk.grassDark, SNOW, lk.sf); ctx.lineWidth = 2.6; ctx.lineCap = 'round';
+      ctx.strokeStyle = mix(mix(lk.grassDark, '#6a6a3a', 0.35), SNOW, lk.sf); ctx.globalAlpha = 0.75; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+      ctx.globalAlpha = 1;
       if (own || market) {
         ctx.strokeStyle = own ? (p.leased ? '#e8c56a' : '#f3c53d') : 'rgba(255,250,235,0.9)'; ctx.lineWidth = own && !p.leased ? 2.2 : 1.8;
         if (market || p.leased) ctx.setLineDash([6, 5]);
@@ -465,7 +478,7 @@
 
   function renderChunk(ch, cx, cy, level) {
     const lk = TR.look();
-    const dpr = Math.min(2, window.devicePixelRatio || 1), s = level * dpr;
+    const dpr = Math.min(2, window.devicePixelRatio || 1), s = Math.min(3, level * dpr);
     const o = ISO.toWorld(cx * CH, cy * CH);         // górny wierzchołek rombu kawałka
     const X0 = o.x - CW / 2 - PAD_SIDE, Y0 = o.y - PAD_TOP;
     const w = Math.ceil((CW + PAD_SIDE * 2) * s), h = Math.ceil((CHH + PAD_TOP + 8) * s);
@@ -486,8 +499,9 @@
     for (let y = cy * CH; y < cy * CH + CH; y++) for (let x = cx * CH; x < cx * CH + CH; x++) {
       if (x >= W || y >= H) continue;
       const i = y * W + x, p = ISO.toWorld(x, y);
-      if (G.S.map.t[i] === T.WATER || G.S.map.t[i] === T.YARD) continue;
-      g.strokeStyle = 'rgba(0,0,0,0.05)'; diamond(g, p.x, p.y); g.stroke();
+      const tt = G.S.map.t[i];
+      if (tt !== T.ROAD && tt !== T.VILLAGE && tt !== T.FOREST) continue;
+      g.strokeStyle = 'rgba(0,0,0,0.035)'; diamond(g, p.x, p.y); g.stroke();
     }
     // dekoracje w kolejności głębi (x + y rosnąco)
     for (let sidx = 0; sidx <= 2 * (CH - 1); sidx++) for (let x = Math.max(0, sidx - CH + 1); x <= Math.min(CH - 1, sidx); x++) {
@@ -500,14 +514,16 @@
     ch.look = lk.key;
     ch.hash = chunkHash(cx, cy);
     ch.dirty = false;
-    while (totalPx > MAX_PX && chunks.size > 1) evictOne(ch);
+    while (totalPx > MAX_PX && chunks.size > 1) if (!evictOne(ch)) break;
   }
   function evictOne(keep) {
     let worst = null, wk = null;
-    for (const [k, c] of chunks) { if (c === keep) continue; if (!worst || c.last < worst.last) { worst = c; wk = k; } }
+    for (const [k, c] of chunks) { if (c === keep || c.last >= frameNow) continue; if (!c.g) { chunks.delete(k); continue; } if (!worst || c.last < worst.last) { worst = c; wk = k; } }
     if (worst) { totalPx -= 2 * worst.g.width * worst.g.height; chunks.delete(wk); }
+    else return false;
+    return true;
   }
-  TR.invalidateAll = function () { for (const c of chunks.values()) c.dirty = true; fieldDir = null; };
+  TR.invalidateAll = function () { for (const c of chunks.values()) c.dirty = true; fieldDir = null; bs = null; };
   TR.invalidateTile = function (i) {
     if (i == null || i < 0) return;
     const cx = Math.floor((i % W) / CH), cy = Math.floor(((i / W) | 0) / CH);
@@ -523,64 +539,145 @@
   G.on('parcelChanged', invalidateParcel);
   G.on('landBought', invalidateParcel);
   G.on('landSold', invalidateParcel);
-  G.on('newGame', () => { chunks.clear(); totalPx = 0; fieldDir = null; waterTiles = null; });
+  G.on('newGame', () => { chunks.clear(); totalPx = 0; fieldDir = null; waterTiles = null; bs = null; });
   G.on('load', () => { TR.invalidateAll(); waterTiles = null; });
 
-  // widoczne kawałki dla bieżącej kamery
-  function visibleChunks(pad) {
-    const vr = ISO.visibleRange(pad || 1);
+  // ---------- bufor ekranowy terenu ----------
+  // Teren zmienia się rzadko, a kamera zwykle stoi — składamy kawałki do jednego płótna wielkości ekranu z marginesem M.
+  // Stoi kamera → jeden drawImage. Przesuwanie → przesunięcie bufora o całe piksele i domalowanie odsłoniętych pasów.
+  // Zmieniony kawałek → domalowanie tylko jego prostokąta. Zmiana zoomu → pełne przemalowanie.
+  const M = 128;                                   // margines bufora (px CSS)
+  const BG = '#26361f';
+  let buf = null, buf2 = null, bs = null, pending = false, frameNow = 0;
+  // poziom bufora kawałków: najbliższy poziom ≥ 85% zoomu (lekkie powiększenie jest niewidoczne, a oszczędza pamięć)
+  const tLevel = z => { for (const l of SP.LEVELS) if (l >= z * 0.85 - 1e-6) return l; return SP.LEVELS[SP.LEVELS.length - 1]; };          // bs: { s (px urządzenia na px świata), X0, Y0 (świat lewego-górnego rogu), w, h, level, look }
+  function cacheRange() {
+    // kawałki przecinające prostokąt bufora
+    const X0 = bs.X0, Y0 = bs.Y0, X1 = X0 + bs.w / bs.s, Y1 = Y0 + bs.h / bs.s;
+    const pts = [[X0, Y0], [X1, Y0], [X0, Y1 + PAD_TOP], [X1, Y1 + PAD_TOP]].map(p => ISO.toTileF(p[0], p[1]));
+    const xs = pts.map(p => p.tx), ys = pts.map(p => p.ty);
+    const x0 = Math.max(0, Math.floor(Math.min(...xs)) - 1), x1 = Math.min(W - 1, Math.ceil(Math.max(...xs)) + 1);
+    const y0 = Math.max(0, Math.floor(Math.min(...ys)) - 1), y1 = Math.min(H - 1, Math.ceil(Math.max(...ys)) + 1);
     const out = [];
-    const cx0 = Math.floor(vr.x0 / CH), cx1 = Math.floor(vr.x1 / CH), cy0 = Math.floor(vr.y0 / CH), cy1 = Math.floor(vr.y1 / CH);
-    for (let cy = cy0; cy <= cy1; cy++) for (let cx = cx0; cx <= cx1; cx++) out.push([cx, cy]);
+    for (let cy = Math.floor(y0 / CH); cy <= Math.floor(y1 / CH); cy++) for (let cx = Math.floor(x0 / CH); cx <= Math.floor(x1 / CH); cx++) {
+      const o = ISO.toWorld(cx * CH, cy * CH);
+      const a0 = o.x - CW / 2 - PAD_SIDE, a1 = o.x + CW / 2 + PAD_SIDE, b0 = o.y - PAD_TOP, b1 = o.y + CHH + 8;
+      if (a1 < X0 || a0 > X1 || b1 < Y0 || b0 > Y1) continue;
+      out.push([cx, cy]);
+    }
     out.sort((a, b) => (a[0] + a[1]) - (b[0] + b[1]) || a[0] - b[0]);
     return out;
   }
-  // czy romb kawałka przecina ekran
-  function chunkOnScreen(cx, cy, cam) {
-    const o = ISO.toWorld(cx * CH, cy * CH);
-    const x0 = (o.x - CW / 2 - PAD_SIDE - cam.x) * cam.zoom, x1 = (o.x + CW / 2 + PAD_SIDE - cam.x) * cam.zoom;
-    const y0 = (o.y - PAD_TOP - cam.y) * cam.zoom, y1 = (o.y + CHH + 8 - cam.y) * cam.zoom;
-    return x1 >= 0 && x0 <= cam.vw && y1 >= 0 && y0 <= cam.vh;
+  // przygotuj (wyrenderuj w razie potrzeby) kawałek; zwraca obiekt kawałka i informację, czy był przemalowany
+  function ensureChunk(cx, cy, level, lk, now, checkHash, st) {
+    const key = chunkKey(level, cx, cy);
+    let ch = chunks.get(key);
+    if (!ch) { ch = { g: null, d: null, dirty: true, last: now }; chunks.set(key, ch); }
+    ch.last = now;
+    if (!ch.dirty && ch.g) {
+      if (ch.look !== lk.key) ch.dirty = true;
+      else if (checkHash && st.hashes < 24) { st.hashes++; if (chunkHash(cx, cy) !== ch.hash) ch.dirty = true; }
+    }
+    let changed = false;
+    if (ch.dirty || !ch.g) {
+      // budżet czasu na klatkę: kawałki widoczne mają pierwszeństwo, margines dorysowuje się w kolejnych klatkach
+      const lim = st.onScreen(cx, cy) ? st.budget + 18 : st.budget;
+      if (lim > 0) { const t0 = performance.now(); renderChunk(ch, cx, cy, level); const dt = performance.now() - t0; st.budget -= dt; st.rendered++; changed = true; }
+      else if (!ch.g) {
+        // zastępczo: ten sam kawałek z innego poziomu zoomu (rozmyty przez chwilę), a jeśli brak — dziura w tle do następnej klatki
+        for (const l of SP.LEVELS) { const o = chunks.get(chunkKey(l, cx, cy)); if (o && o.g && o.look === lk.key) return { ch: o, changed: false, stand: true }; }
+        return { ch: null, changed: false };
+      }
+    }
+    return { ch, changed };
   }
-
-  // główne rysowanie: dwie warstwy
+  // przemaluj prostokąt bufora (px urządzenia) wszystkimi kawałkami, które go przecinają
+  function paintRegion(list, rx, ry, rw, rh) {
+    if (rw <= 0 || rh <= 0) return;
+    const g = buf.getContext('2d');
+    g.save();
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.beginPath(); g.rect(rx, ry, rw, rh); g.clip();
+    g.fillStyle = BG; g.fillRect(rx, ry, rw, rh);
+    g.imageSmoothingEnabled = true;
+    const s = bs.s;
+    const hit = [];
+    for (const ch of list) {
+      const k = s / ch.scale, x = (ch.X0 - bs.X0) * s, y = (ch.Y0 - bs.Y0) * s, w = ch.g.width * k, h = ch.g.height * k;
+      if (x + w < rx || x > rx + rw || y + h < ry || y > ry + rh) continue;
+      hit.push([ch, x, y, w, h]);
+    }
+    for (const q of hit) g.drawImage(q[0].g, q[1], q[2], q[3], q[4]);
+    for (const q of hit) g.drawImage(q[0].d, q[1], q[2], q[3], q[4]);
+    g.restore();
+  }
   TR.draw = function (ctx) {
-    const cam = G.cam, level = SP.levelFor(cam.zoom), lk = TR.look();
+    const cam = G.cam, level = tLevel(cam.zoom), lk = TR.look(), dpr = Math.min(2, window.devicePixelRatio || 1);
     const now = performance.now();
-    const list = visibleChunks(1).filter(c => chunkOnScreen(c[0], c[1], cam));
-    // co ~0,5 s sprawdź skróty stanu widocznych kawałków
+    frameNow = now;
+    const s = cam.zoom * dpr;
+    const bw = Math.ceil((cam.vw + 2 * M) * dpr), bh = Math.ceil((cam.vh + 2 * M) * dpr);
+    if (!buf) { buf = document.createElement('canvas'); buf2 = document.createElement('canvas'); }
+    let full = false;
+    if (!bs || buf.width !== bw || buf.height !== bh || Math.abs(bs.s - s) > 1e-9 || bs.level !== level || bs.look !== lk.key) {
+      if (buf.width !== bw || buf.height !== bh) { buf.width = buf2.width = bw; buf.height = buf2.height = bh; }
+      bs = { s, w: bw, h: bh, level, look: lk.key, X0: cam.x - M / cam.zoom, Y0: cam.y - M / cam.zoom };
+      full = true;
+    }
+    // przesunięcie: gdzie leży ekran w buforze (px urządzenia)
+    let ox = Math.round((cam.x - bs.X0) * s), oy = Math.round((cam.y - bs.Y0) * s);
+    const strips = [];
+    if (!full && (ox < 0 || oy < 0 || ox > 2 * M * dpr || oy > 2 * M * dpr)) {
+      const dx = ox - Math.round(M * dpr), dy = oy - Math.round(M * dpr);
+      if (Math.abs(dx) >= bw || Math.abs(dy) >= bh) full = true;
+      else {
+        // przewiń bufor o całe piksele (bez rozmycia) i domaluj odsłonięte pasy
+        const g2 = buf2.getContext('2d');
+        g2.setTransform(1, 0, 0, 1, 0, 0); g2.clearRect(0, 0, bw, bh);
+        g2.drawImage(buf, -dx, -dy);
+        const t = buf; buf = buf2; buf2 = t;
+        bs.X0 += dx / s; bs.Y0 += dy / s;
+        if (dx > 0) strips.push([bw - dx, 0, dx, bh]); else if (dx < 0) strips.push([0, 0, -dx, bh]);
+        if (dy > 0) strips.push([0, bh - dy, bw, dy]); else if (dy < 0) strips.push([0, 0, bw, -dy]);
+        ox -= dx; oy -= dy;
+      }
+    }
+    if (full) { bs.X0 = cam.x - M / cam.zoom; bs.Y0 = cam.y - M / cam.zoom; ox = Math.round(M * dpr); oy = Math.round(M * dpr); }
+    // kawałki bufora; co ~0,5 s sprawdzamy skróty stanu (rośliny, fazy, własność)
     const checkHash = now - hashAt > 500;
     if (checkHash) hashAt = now;
-    let budget = 7, rendered = 0;                   // ms na renderowanie nowych kawałków w tej klatce
-    const ready = [];
+    pending = false;
+    const vx0 = cam.x, vy0 = cam.y, vx1 = cam.x + cam.vw / cam.zoom, vy1 = cam.y + cam.vh / cam.zoom;
+    const st = { budget: 7, rendered: 0, hashes: 0, onScreen: (cx, cy) => { const o = ISO.toWorld(cx * CH, cy * CH); return !(o.x + CW / 2 < vx0 || o.x - CW / 2 > vx1 || o.y + CHH < vy0 || o.y - PAD_TOP > vy1); } };
+    const list = cacheRange(), ready = [], changed = [];
     for (const [cx, cy] of list) {
-      const key = chunkKey(level, cx, cy);
-      let ch = chunks.get(key);
-      if (!ch) { ch = { g: null, d: null, dirty: true, last: now }; chunks.set(key, ch); }
-      ch.last = now;
-      if (!ch.dirty && ch.g) {
-        if (ch.look !== lk.key) ch.dirty = true;
-        else if (checkHash && (rendered < 3)) { const hsv = chunkHash(cx, cy); if (hsv !== ch.hash) ch.dirty = true; }
+      const r = ensureChunk(cx, cy, level, lk, now, checkHash, st);
+      if (!r.ch) { pending = true; continue; }
+      ready.push(r.ch);
+      if (r.changed) changed.push(r.ch);
+      if (r.stand) pending = true;
+    }
+    if (pending && !st.rendered && !full) { /* nic nowego */ }
+    if (full) paintRegion(ready, 0, 0, bw, bh);
+    else {
+      for (const q of strips) paintRegion(ready, q[0], q[1], q[2], q[3]);
+      for (const ch of changed) {
+        const k = s / ch.scale, x = (ch.X0 - bs.X0) * s, y = (ch.Y0 - bs.Y0) * s;
+        paintRegion(ready, Math.floor(x), Math.floor(y), Math.ceil(ch.g.width * k) + 2, Math.ceil(ch.g.height * k) + 2);
       }
-      if (ch.dirty || !ch.g) {
-        const t0 = performance.now();
-        if (budget > 0 || !ch.g) { renderChunk(ch, cx, cy, level); rendered++; budget -= performance.now() - t0; }
-      }
-      ready.push(ch);
     }
-    // grunt
-    ctx.imageSmoothingEnabled = true;
-    for (const ch of ready) {
-      const k = cam.zoom / ch.scale;
-      ctx.drawImage(ch.g, (ch.X0 - cam.x) * cam.zoom, (ch.Y0 - cam.y) * cam.zoom, ch.g.width * k, ch.g.height * k);
-    }
-    for (const ch of ready) {
-      const k = cam.zoom / ch.scale;
-      ctx.drawImage(ch.d, (ch.X0 - cam.x) * cam.zoom, (ch.Y0 - cam.y) * cam.zoom, ch.d.width * k, ch.d.height * k);
-    }
-    TR._ready = ready;
-    return rendered;
+    // na ekran: jeden blit 1:1
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    const vw = Math.round(cam.vw * dpr), vh = Math.round(cam.vh * dpr);
+    ctx.drawImage(buf, ox, oy, vw, vh, 0, 0, vw, vh);
+    ctx.restore();
+    // korekta subpikselowa: obiekty liczone są dokładnie, teren przesunięty o ułamek px — pomijalne
+    TR._ready = ready.filter(ch => { const k = s / ch.scale, x = (ch.X0 - bs.X0) * s - ox, y = (ch.Y0 - bs.Y0) * s - oy; return x < vw && y < vh && x + ch.g.width * k > 0 && y + ch.g.height * k > 0; });
+    return st.rendered;
   };
+  TR.invalidateView = function () { bs = null; };
   // światła okien we wsi (z widocznych kawałków) → ekranowe pozycje liczy objects/render
   TR.lights = function () {
     const out = [];

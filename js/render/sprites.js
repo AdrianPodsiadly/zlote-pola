@@ -92,14 +92,19 @@
   };
   // koło (oś y = lewo-prawo): środek (cx, cy), promień r, szerokość w, kolor opony; felga jaśniejsza
   Model.prototype.wheel = function (cx, cy, cz, r, w, color, rim) {
-    this.cyl('y', cx, cy, cz, r, cy - w / 2, cy + w / 2, color || '#2a2a2c', 14, { capColor: rim || '#8f8f93', phase: 0.2 });
-    // piasta
-    this.cyl('y', cx, cy, cz, r * 0.33, cy - w / 2 - 0.004, cy + w / 2 + 0.004, shade(rim || '#8f8f93', 0.8), 8);
+    const t = color || '#2a2a2c', n = r > 0.1 ? 18 : 14;
+    // opona: naprzemienne ściany bieżnika (klocki), boki ciemne z felgą
+    this.cyl('y', cx, cy, cz, r, cy - w / 2, cy + w / 2, t, n, { capColor: shade(t, 1.25), phase: 0.2, sideColors: [t, shade(t, 0.62)] });
+    // felga (tarcza) wystająca lekko z boku i piasta
+    this.cyl('y', cx, cy, cz, r * 0.62, cy - w / 2 - 0.004, cy + w / 2 + 0.004, rim || '#8f8f93', 12);
+    this.cyl('y', cx, cy, cz, r * 0.26, cy - w / 2 - 0.01, cy + w / 2 + 0.01, shade(rim || '#8f8f93', 0.75), 8);
     return this;
   };
   // dach dwuspadowy wzdłuż osi x (kalenica wzdłuż x): środek (cx, cy), dół okapu z0, szerokość sy, długość sx, wysokość h, nawis ov
+  let SNOWF = 0;                       // śnieg na dachach (ustawiane na czas budowy modelu z opts.snow)
   Model.prototype.gable = function (cx, cy, z0, sx, sy, h, color, ov, opts) {
     ov = ov || 0.08;
+    if (SNOWF > 0) color = mix(color, '#f3f5f8', SNOWF);
     const poly = [[cy - sy / 2 - ov, z0 - ov * 0.5], [cy, z0 + h], [cy + sy / 2 + ov, z0 - ov * 0.5], [cy + sy / 2 + ov, z0 - ov * 0.5 - 0.03], [cy, z0 + h - 0.03], [cy - sy / 2 - ov, z0 - ov * 0.5 - 0.03]];
     return this.prism('x', poly, cx - sx / 2 - ov, cx + sx / 2 + ov, color, Object.assign({ capColor: shade(color, 0.72) }, opts || {}));
   };
@@ -176,7 +181,7 @@
   // ---------- pamięć podręczna ----------
   const cache = new Map();
   let cachePx = 0;
-  const MAX_PX = 24e6;
+  const MAX_PX = 12e6;
   SP.clear = function () { cache.clear(); cachePx = 0; };
   SP.stats = () => ({ sprites: cache.size, px: cachePx });
   function evict() {
@@ -188,7 +193,7 @@
     if (!o) return '';
     let s = (o.color || '') + '|' + (o.cap || '') + '|' + (o.axle || '') + '|' + q(o.fill, 4) + '|' + (o.auger || '') + '|' + (o.lowered ? 1 : 0) + '|' + (o.level || 1) + '|' +
       (o.size ? o.size.join('x') : '') + '|' + (o.variant || '') + '|' + (o.progress != null && o.progress < 1 ? q(o.progress, 8) : 1) + '|' + (o.anim || '') + '|' + (o.frame || 0) + '|' +
-      (o.scale || 1) + '|' + (o.young ? 1 : 0) + '|' + (o.rot || 0) + '|' + (o.seed || 0) + '|' + (o.season || '') + '|' + (o.open ? 1 : 0);
+      (o.scale || 1) + '|' + (o.young ? 1 : 0) + '|' + (o.rot || 0) + '|' + (o.seed || 0) + '|' + (o.season || '') + '|' + (o.open ? 1 : 0) + '|' + q(o.steer, 20) + '|' + (o.upg != null ? 1 : 0) + '|' + (o.product || '') + '|' + (o.snow ? 1 : 0);
     return s;
   }
   // angle → indeks kierunku; budynki mają stałe kąty (0 / π/2)
@@ -233,13 +238,75 @@
     return e;
   };
 
+  // ---------- cienie rzucane (jedno źródło światła — to samo co cieniowanie ścian) ----------
+  // Każdy punkt modelu rzutujemy na ziemię wzdłuż kierunku światła: (x, y, z) → (x − z·Lx/Lz, y − z·Ly/Lz, 0).
+  // Sylwetka (suma wielokątów) rysowana jednolicie na czarno; objects.js nakłada ją z przezroczystością.
+  const SHX = -L[0] / L[2], SHY = -L[1] / L[2];
+  SP.SHADOW = { dx: SHX, dy: SHY };
+  const shCache = new Map();
+  let shPx = 0;
+  SP.shadow = function (key, angle, opts) {
+    opts = opts || {};
+    const zoom = opts.zoom || (G.cam ? G.cam.zoom : 1);
+    const level = SP.levelFor(zoom), dpr = Math.min(2, window.devicePixelRatio || 1), scale = level * dpr;
+    let a;
+    if (opts.exactAngle) a = angle || 0; else a = SP.dirAngle(SP.dirIndex(angle || 0));
+    const ck = key + '#' + a.toFixed(3) + '#' + scale.toFixed(2) + '#' + optKey(key, Object.assign({}, opts, { fill: 0, frame: 0 }));
+    let e = shCache.get(ck);
+    if (e) return e;
+    const model = SP.model(key, opts), ca = Math.cos(a), sa = Math.sin(a);
+    const polys = [];
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (const f of model.faces) {
+      if (f.o && (f.o.line || f.o.alpha != null && f.o.alpha < 0.5)) continue;
+      const P = f.p.map(p => { const r = rot(p, ca, sa); const z = Math.max(0, r[2]); return proj([r[0] + z * SHX, r[1] + z * SHY, 0]); });
+      for (const q of P) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }
+      polys.push(P);
+    }
+    if (!polys.length) { x0 = y0 = -1; x1 = y1 = 1; }
+    const pad = 3, w = Math.ceil((x1 - x0) * scale) + pad * 2, h = Math.ceil((y1 - y0) * scale) + pad * 2;
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.min(4096, w)); c.height = Math.max(1, Math.min(4096, h));
+    const ctx = c.getContext('2d');
+    const ox = -x0 * scale + pad, oy = -y0 * scale + pad;
+    ctx.translate(ox, oy); ctx.scale(scale, scale);
+    ctx.fillStyle = '#000'; ctx.strokeStyle = '#000'; ctx.lineWidth = 0.8; ctx.lineJoin = 'round';
+    // każdy wielokąt osobno (różne zwroty ścian w jednej ścieżce dawałyby dziury)
+    for (const P of polys) { ctx.beginPath(); for (let i = 0; i < P.length; i++) { if (i) ctx.lineTo(P[i][0], P[i][1]); else ctx.moveTo(P[i][0], P[i][1]); } ctx.closePath(); ctx.fill(); ctx.stroke(); }
+    e = { c, ox, oy, scale, w: c.width, h: c.height };
+    shCache.set(ck, e); shPx += c.width * c.height;
+    if (shPx > MAX_PX * 0.5) { for (const [k, v] of shCache) { shCache.delete(k); shPx -= v.w * v.h; if (shPx < MAX_PX * 0.3) break; } }
+    return e;
+  };
+  // rysuje cień sprite'a; alpha — krycie cienia
+  SP.drawShadow = function (ctx, key, angle, opts, sx, sy, zoom, alpha) {
+    const e = SP.shadow(key, angle, Object.assign({ zoom }, opts || {}));
+    const k = zoom / e.scale;
+    const ga = ctx.globalAlpha; ctx.globalAlpha = ga * (alpha == null ? 0.3 : alpha);
+    ctx.drawImage(e.c, sx - e.ox * k, sy - e.oy * k, e.w * k, e.h * k);
+    ctx.globalAlpha = ga;
+  };
+  // kotwice modelu w układzie modelu (bez obrotu) — do składania zestawów (zaczepy); buforowane
+  const anCache = new Map();
+  SP.anchors = function (key, opts) {
+    opts = opts || {};
+    const ck = key + '#' + optKey(key, Object.assign({}, opts, { fill: 0, frame: 0, anim: '' }));
+    let a = anCache.get(ck);
+    if (!a) { a = SP.model(key, opts).anchors; anCache.set(ck, a); if (anCache.size > 2000) anCache.clear(); }
+    return a;
+  };
+  const _clear = SP.clear;
+  SP.clear = function () { _clear(); shCache.clear(); shPx = 0; anCache.clear(); };
+
   // ---------- definicje modeli ----------
   const DEF = SP.DEF = {};
   SP.model = function (key, opts) {
     opts = opts || {};
     const m = new Model();
     const fn = DEF[key] || DEF.unknown;
+    SNOWF = opts.snow ? 0.82 : 0;
     try { fn(m, opts); } catch (e) { console.error('[sprites] model ' + key, e); DEF.unknown(m, opts); }
+    SNOWF = 0;
     return m;
   };
   SP.has = key => !!DEF[key];
@@ -267,101 +334,180 @@
   function hitch(m, x, y, z) { m.box(x, y, z, 0.05, 0.08, 0.03, '#3c3c40'); m.anchor('hitch', x, y, z); }
 
   // ===================== CIĄGNIKI =====================
-  // Stary ciągnik w stylu klasycznych polskich maszyn (lata 80.): wąska maska, odkryta rama, duże tylne koła, mała kabina
+  // przekrój maski z fazowanymi górnymi krawędziami (w płaszczyźnie y-z), wyciągany wzdłuż x
+  function hoodPoly(w, z0, z1, ch) { return [[-w / 2, z0], [w / 2, z0], [w / 2, z1 - ch], [w / 2 - ch, z1], [-w / 2 + ch, z1], [-w / 2, z1 - ch]]; }
+  // błotnik łukowy nad kołem (oś koła x0, z0), promień r, od y0 do y1
+  function fender(m, x0, z0, r, y0, y1, color) {
+    const p = [], n = 7, a0 = 0.25, a1 = Math.PI - 0.25;
+    for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; p.push([x0 + Math.cos(a) * (r + 0.03), z0 + Math.sin(a) * (r + 0.03)]); }
+    for (let i = n; i >= 0; i--) { const a = a0 + (a1 - a0) * i / n; p.push([x0 + Math.cos(a) * (r + 0.012), z0 + Math.sin(a) * (r + 0.012)]); }
+    m.prism('y', p, y0, y1, color);
+  }
+  // Stary ciągnik w stylu klasycznych polskich maszyn z lat 70.–80. (bez marki): wąska czerwona maska z kratką,
+  // odsłonięty szary blok silnika, duże tylne koła z czerwonymi felgami, małe przednie, kabina z białym dachem
   DEF.tractor_small = function (m, o) {
-    const c = col(o, '#b5402f');
-    const Lb = 0.56, Wb = 0.26;
-    // koła: tylne duże, przednie małe
-    m.wheel(-0.14, -0.14, 0.15, 0.15, 0.07, RUBBER, '#c9452f');
-    m.wheel(-0.14, 0.14, 0.15, 0.15, 0.07, RUBBER, '#c9452f');
-    m.wheel(0.2, -0.11, 0.085, 0.085, 0.045, RUBBER, RIM);
-    m.wheel(0.2, 0.11, 0.085, 0.085, 0.045, RUBBER, RIM);
-    // rama i maska
-    m.box(0.02, 0, 0.1, Lb * 0.55, 0.1, 0.08, '#3a3a3c');                     // podłużnica
-    m.box(0.13, 0, 0.14, 0.3, 0.17, 0.17, c);                                 // maska
-    m.box(0.285, 0, 0.14, 0.02, 0.19, 0.2, shade(c, 0.8));                     // grill
-    m.box(0.27, 0, 0.3, 0.02, 0.15, 0.03, '#eaeaea');                          // reflektory (pas)
-    m.light(0.29, -0.06, 0.25, 1.4); m.light(0.29, 0.06, 0.25, 1.4);
-    // błotniki tylne
-    m.box(-0.14, -0.145, 0.3, 0.2, 0.08, 0.035, shade(c, 0.9));
-    m.box(-0.14, 0.145, 0.3, 0.2, 0.08, 0.035, shade(c, 0.9));
-    // kabina (prosta, klasyczna) z lekko pochylonym przodem
-    m.box(-0.1, 0, 0.26, 0.26, 0.24, 0.03, shade(c, 0.7));
-    m.prism('z', [[-0.22, -0.11], [0.0, -0.11], [0.0, 0.11], [-0.22, 0.11]], 0.29, 0.5, GLASS);
-    for (const dx of [-0.22, -0.01]) for (const dy of [-0.11, 0.11]) m.box(dx, dy, 0.29, 0.02, 0.02, 0.21, '#d8d8d8');
-    m.box(-0.11, 0, 0.5, 0.26, 0.27, 0.025, '#e8e4dc');                        // biały dach
-    m.light(0.0, 0, 0.52, 1.4, '#fff1c0');
-    // kierowca (sylwetka)
-    m.box(-0.13, 0, 0.3, 0.07, 0.08, 0.11, '#3f5a8a'); m.cyl('z', -0.13, 0, 0.41, 0.03, 0.41, 0.47, '#e2b58d', 7);
-    exhaust(m, 0.12, -0.06, 0.31, 0.22, 0.012);
+    const c = col(o, '#b5402f'), dark = '#3a3b3e', eng = '#6c6f73';
+    const Rr = 0.16, Rf = 0.085;
+    m.wheel(-0.15, -0.135, Rr, Rr, 0.075, RUBBER, '#c9452f'); m.wheel(-0.15, 0.135, Rr, Rr, 0.075, RUBBER, '#c9452f');
+    m.wheel(0.21, -0.085, Rf, Rf, 0.042, RUBBER, '#c9452f'); m.wheel(0.21, 0.085, Rf, Rf, 0.042, RUBBER, '#c9452f');
+    m.box(0.21, 0, Rf - 0.01, 0.03, 0.17, 0.025, dark);                         // przednia oś
+    // rama, skrzynia, blok silnika (szary, odkryty pod maską)
+    m.box(-0.12, 0, 0.1, 0.22, 0.12, 0.14, dark);
+    m.box(0.12, 0, 0.1, 0.26, 0.1, 0.09, eng);
+    for (let i = 0; i < 3; i++) m.box(0.06 + i * 0.06, -0.052, 0.12, 0.03, 0.006, 0.05, shade(eng, 0.8));
+    // maska (wąska, zaokrąglona) i atrapa z pionowymi żeberkami
+    m.prism('x', hoodPoly(0.13, 0.19, 0.31, 0.03), -0.02, 0.28, c);
+    m.box(0.285, 0, 0.13, 0.016, 0.13, 0.18, shade(c, 0.85));
+    for (let i = -2; i <= 2; i++) m.box(0.295, i * 0.022, 0.15, 0.004, 0.008, 0.13, '#d8d8d8');
+    // reflektory po bokach maski
+    for (const y of [-0.08, 0.08]) { m.cyl('x', 0, y, 0.29, 0.022, 0.24, 0.27, '#d8d8d8', 8); m.light(0.275, y, 0.29, 1.5); }
+    // błotniki tylne (płaskie, klasyczne) i podesty
+    fender(m, -0.15, 0.16, Rr, -0.18, -0.1, c); fender(m, -0.15, 0.16, Rr, 0.1, 0.18, c);
+    m.box(0.02, -0.11, 0.1, 0.14, 0.05, 0.012, '#4a4c50'); m.box(0.02, 0.11, 0.1, 0.14, 0.05, 0.012, '#4a4c50');
+    // kabina: dolne czerwone ścianki, szyby, białe słupki i biały dach
+    m.box(-0.13, 0, 0.24, 0.23, 0.22, 0.06, c);
+    m.prism('z', [[-0.235, -0.105], [-0.02, -0.105], [-0.02, 0.105], [-0.235, 0.105]], 0.3, 0.5, GLASS);
+    for (const dx of [-0.235, -0.025]) for (const dy of [-0.105, 0.105]) m.box(dx, dy, 0.3, 0.018, 0.018, 0.2, '#e4e0d6');
+    m.box(-0.13, 0, 0.3, 0.215, 0.214, 0.012, '#e4e0d6');                       // listwa pod szybą
+    m.box(-0.13, 0, 0.5, 0.26, 0.25, 0.03, '#eeeae2');                          // dach
+    m.box(-0.13, 0, 0.53, 0.2, 0.19, 0.012, '#ffffff');
+    m.light(-0.01, -0.07, 0.52, 1.4, '#fff1c0'); m.light(-0.01, 0.07, 0.52, 1.4, '#fff1c0');
+    // kierowca w kabinie
+    m.box(-0.15, 0, 0.3, 0.06, 0.08, 0.1, '#3f5a8a'); m.cyl('z', -0.15, 0, 0.4, 0.028, 0.4, 0.46, '#e2b58d', 7);
+    // wydech pionowy na masce z daszkiem
+    exhaust(m, 0.1, -0.045, 0.31, 0.2, 0.012); m.box(0.1, -0.045, 0.51, 0.03, 0.03, 0.006, '#2a2a2c');
+    // TUZ (ramiona) i zaczep
+    m.box(-0.28, -0.06, 0.1, 0.08, 0.015, 0.02, dark); m.box(-0.28, 0.06, 0.1, 0.08, 0.015, 0.02, dark);
     hitch(m, -0.3, 0, 0.1);
+    m.box(-0.235, -0.12, 0.2, 0.02, 0.02, 0.02, '#e03030'); m.light(-0.245, -0.12, 0.21, 0.8, '#ff5040');
     m.anchor('front', 0.3, 0, 0.15); m.anchor('rear', -0.3, 0, 0.15);
   };
-  function tractorModern(m, o, size) {
-    const c = col(o, '#3f7d3a');
-    const s = size;                                  // 1 = średni, 1.25 = duży
-    const Rr = 0.17 * s, Rf = 0.11 * s, W = 0.3 * s;
-    m.wheel(-0.17 * s, -W / 2, Rr, Rr, 0.09 * s, RUBBER, RIM);
-    m.wheel(-0.17 * s, W / 2, Rr, Rr, 0.09 * s, RUBBER, RIM);
-    m.wheel(0.22 * s, -W / 2 + 0.02, Rf, Rf, 0.07 * s, RUBBER, RIM);
-    m.wheel(0.22 * s, W / 2 - 0.02, Rf, Rf, 0.07 * s, RUBBER, RIM);
-    // maska opadająca ku przodowi
-    m.prism('y', [[0.02 * s, 0.12 * s], [0.36 * s, 0.14 * s], [0.36 * s, 0.3 * s], [0.02 * s, 0.36 * s]], -0.11 * s, 0.11 * s, c);
-    m.box(0.36 * s, 0, 0.12 * s, 0.02, 0.2 * s, 0.17 * s, '#2a2c2f');       // grill
-    m.light(0.37 * s, -0.07 * s, 0.26 * s, 1.5); m.light(0.37 * s, 0.07 * s, 0.26 * s, 1.5);
-    // błotniki
-    m.box(-0.17 * s, -W / 2, Rr * 2 + 0.01, 0.26 * s, 0.1 * s, 0.03, shade(c, 0.85));
-    m.box(-0.17 * s, W / 2, Rr * 2 + 0.01, 0.26 * s, 0.1 * s, 0.03, shade(c, 0.85));
-    // kabina
-    cab(m, -0.1 * s, 0, 0.2 * s, 0.3 * s, 0.3 * s, 0.34 * s, c);
-    exhaust(m, 0.06 * s, -0.12 * s, 0.36 * s, 0.26 * s, 0.014);
-    hitch(m, -0.36 * s, 0, 0.12 * s);
-    // obciążnik przedni
-    m.box(0.4 * s, 0, 0.1 * s, 0.06 * s, 0.14 * s, 0.1 * s, '#4a4c50');
-    m.anchor('front', 0.42 * s, 0, 0.16 * s); m.anchor('rear', -0.36 * s, 0, 0.15 * s);
+  // Nowoczesny ciągnik: długa opadająca maska, duże tylne koła, przeszklona kabina z belką świateł, obciążnik przedni
+  function tractorModern(m, o, s) {
+    const c = col(o, '#3f7d3a'), dark = '#2e3033', grey = '#55585c';
+    const Rr = 0.19 * s, Rf = 0.125 * s, ty = 0.155 * s, tf = 0.13 * s;
+    const rim = mix(c, '#d8d8d8', 0.25);
+    m.wheel(-0.17 * s, -ty, Rr, Rr, 0.1 * s, RUBBER, rim); m.wheel(-0.17 * s, ty, Rr, Rr, 0.1 * s, RUBBER, rim);
+    m.wheel(0.25 * s, -tf, Rf, Rf, 0.075 * s, RUBBER, rim); m.wheel(0.25 * s, tf, Rf, Rf, 0.075 * s, RUBBER, rim);
+    m.box(0.25 * s, 0, Rf * 0.9, 0.05 * s, 0.2 * s, 0.04 * s, dark);                       // oś przednia
+    // rama/podwozie i skrzynia
+    m.box(0.06 * s, 0, 0.1 * s, 0.6 * s, 0.13 * s, 0.1 * s, dark);
+    m.box(-0.15 * s, 0, 0.13 * s, 0.22 * s, 0.2 * s, 0.14 * s, grey);
+    // maska: przekrój fazowany, lekko opadająca ku przodowi (dwie części)
+    m.prism('x', hoodPoly(0.2 * s, 0.17 * s, 0.38 * s, 0.035 * s), 0.0, 0.26 * s, c);
+    m.prism('x', hoodPoly(0.19 * s, 0.17 * s, 0.36 * s, 0.04 * s), 0.26 * s, 0.42 * s, c);
+    // boczne kratki wlotu i ciemny pas
+    for (const y of [-1, 1]) m.box(0.3 * s, y * 0.098 * s, 0.22 * s, 0.18 * s, 0.006, 0.09 * s, '#2a2c2f');
+    for (const y of [-1, 1]) m.box(0.12 * s, y * 0.101 * s, 0.32 * s, 0.24 * s, 0.004, 0.012 * s, shade(c, 1.3));
+    // przód: atrapa i reflektory
+    m.box(0.425 * s, 0, 0.17 * s, 0.012, 0.17 * s, 0.17 * s, '#26282b');
+    for (const y of [-0.06, 0.06]) { m.box(0.427 * s, y * s, 0.29 * s, 0.006, 0.04 * s, 0.025 * s, '#f2f0e6'); m.light(0.43 * s, y * s, 0.3 * s, 1.6); }
+    // obciążnik przedni (płyty)
+    m.box(0.47 * s, 0, 0.09 * s, 0.08 * s, 0.2 * s, 0.13 * s, '#3c3e42');
+    for (let i = 0; i < 4; i++) m.box(0.512 * s, 0, 0.1 * s + i * 0.03 * s, 0.004, 0.19 * s, 0.006, '#5a5c60');
+    // błotniki łukowe nad tylnymi kołami i przednie
+    fender(m, -0.17 * s, Rr, Rr, -ty - 0.06 * s, -ty + 0.06 * s, c); fender(m, -0.17 * s, Rr, Rr, ty - 0.06 * s, ty + 0.06 * s, c);
+    fender(m, 0.25 * s, Rf, Rf * 0.95, -tf - 0.04 * s, -tf + 0.04 * s, dark); fender(m, 0.25 * s, Rf, Rf * 0.95, tf - 0.04 * s, tf + 0.04 * s, dark);
+    // zbiornik paliwa i stopnie (lewa strona)
+    m.box(0.07 * s, -0.11 * s, 0.13 * s, 0.13 * s, 0.05 * s, 0.09 * s, dark);
+    m.box(-0.04 * s, -0.135 * s, 0.1 * s, 0.05 * s, 0.04 * s, 0.006, '#7a7c80'); m.box(-0.04 * s, -0.135 * s, 0.16 * s, 0.05 * s, 0.04 * s, 0.006, '#7a7c80');
+    // kabina: podłoga, przeszklenie, słupki ciemne, dach w kolorze z białym wierzchem, belka świateł
+    const cx = -0.14 * s, cl = 0.3 * s, cw = 0.29 * s, z0 = 0.27 * s, z1 = 0.6 * s;
+    m.box(cx, 0, z0 - 0.02 * s, cl, cw, 0.03 * s, dark);
+    m.box(cx, 0, z0 + 0.01 * s, cl * 0.96, cw * 0.96, z1 - z0 - 0.01 * s, GLASS);
+    for (const dx of [-1, 1]) for (const dy of [-1, 1]) m.box(cx + dx * (cl / 2 - 0.01), dy * (cw / 2 - 0.01), z0, 0.02, 0.02, z1 - z0, '#1e2022');
+    m.box(cx, 0, z0 + 0.12 * s, cl * 0.97, cw * 0.97, 0.008, '#1e2022');      // listwa drzwi
+    m.box(cx + 0.01 * s, 0, z1, cl * 1.08, cw * 1.08, 0.035 * s, c);
+    m.box(cx + 0.01 * s, 0, z1 + 0.035 * s, cl * 0.9, cw * 0.9, 0.012 * s, mix(c, '#ffffff', 0.7));
+    m.box(cx + cl / 2 + 0.02 * s, 0, z1 + 0.005 * s, 0.015, cw * 0.8, 0.02 * s, '#222');
+    for (const y of [-0.09, -0.03, 0.03, 0.09]) m.light(cx + cl / 2 + 0.03 * s, y * s, z1 + 0.015 * s, 1.4, '#fff1c0');
+    m.cyl('z', cx - 0.06 * s, 0.08 * s, z1 + 0.035 * s, 0.014 * s, z1 + 0.035 * s, z1 + 0.06 * s, '#f08a20', 6);   // kogut
+    m.light(cx - 0.06 * s, 0.08 * s, z1 + 0.06 * s, 1, '#ffa040');
+    for (const y of [-1, 1]) m.box(cx + cl / 2 + 0.02 * s, y * (cw / 2 + 0.03 * s), z1 - 0.1 * s, 0.01, 0.025 * s, 0.05 * s, '#222');   // lusterka
+    // kierowca
+    m.box(cx - 0.02 * s, 0, z0 + 0.02 * s, 0.07 * s, 0.09 * s, 0.11 * s, '#3f5a8a'); m.cyl('z', cx - 0.02 * s, 0, z0 + 0.13 * s, 0.03 * s, z0 + 0.13 * s, z0 + 0.19 * s, '#e2b58d', 7);
+    // wydech z prawej przy słupku kabiny
+    exhaust(m, 0.04 * s, 0.07 * s, 0.38 * s, 0.27 * s, 0.016 * s);
+    // TUZ i zaczep
+    m.box(-0.36 * s, -0.07 * s, 0.11 * s, 0.1 * s, 0.018, 0.025, dark); m.box(-0.36 * s, 0.07 * s, 0.11 * s, 0.1 * s, 0.018, 0.025, dark);
+    hitch(m, -0.38 * s, 0, 0.12 * s);
+    for (const y of [-1, 1]) { m.box(cx - cl / 2 - 0.005, y * 0.12 * s, z0 + 0.03 * s, 0.01, 0.03 * s, 0.02 * s, '#e03030'); m.light(cx - cl / 2 - 0.01, y * 0.12 * s, z0 + 0.04 * s, 0.9, '#ff5040'); }
+    m.anchor('front', 0.51 * s, 0, 0.16 * s); m.anchor('rear', -0.38 * s, 0, 0.15 * s);
   }
   DEF.tractor_mid = (m, o) => tractorModern(m, o, 1);
-  DEF.tractor_big = (m, o) => tractorModern(m, o, 1.28);
+  DEF.tractor_big = (m, o) => tractorModern(m, o, 1.25);
 
   // ===================== KOMBAJN =====================
-  // zbiornik ziarna na górze (fill), rura wyładowcza po LEWEJ (−y), auger 'in' (wzdłuż) / 'out' (w bok)
+  // Kombajn zbożowy: duże przednie koła napędowe, małe tylne skrętne, kabina z przodu nad podajnikiem, otwarty zbiornik ziarna
+  // z widocznym ziarnem (fill), silnik i rozrzutnik słomy z tyłu. Rura wyładowcza po LEWEJ (−y): auger 'in' — złożona wzdłuż
+  // lewego boku, 'out' — rozłożona poprzecznie z króćcem skierowanym w dół (kotwica 'auger' = wylot ziarna).
   DEF.combine = function (m, o) {
     const c = col(o, '#d1a62a'), fill = Math.max(0, Math.min(1, o.fill || 0)), out = o.auger === 'out';
-    // koła: przednie napędowe duże, tylne skrętne małe
-    m.wheel(0.16, -0.2, 0.2, 0.2, 0.11, RUBBER, RIM); m.wheel(0.16, 0.2, 0.2, 0.2, 0.11, RUBBER, RIM);
-    m.wheel(-0.28, -0.15, 0.11, 0.11, 0.07, RUBBER, RIM); m.wheel(-0.28, 0.15, 0.11, 0.11, 0.07, RUBBER, RIM);
-    // kadłub
-    m.box(-0.08, 0, 0.16, 0.7, 0.4, 0.3, c);
-    m.box(-0.33, 0, 0.2, 0.2, 0.38, 0.24, shade(c, 0.9));                        // tył (sieczkarnia słomy)
-    m.box(-0.44, 0, 0.22, 0.04, 0.3, 0.1, '#3a3a3c');
-    // zbiornik ziarna (otwarty, z nadstawkami) — widoczne ziarno
-    m.box(-0.1, 0, 0.46, 0.34, 0.36, 0.1, shade(c, 0.95));
-    m.box(-0.1, 0, 0.56, 0.34, 0.36, 0.015, '#8a6a2a', { noCaps: false });
-    m.prism('z', [[-0.26, -0.17], [0.06, -0.17], [0.06, 0.17], [-0.26, 0.17]], 0.56, 0.6, '#4a4a4e', { line: true, lw: 0.8 });
+    const dark = '#2e3033', grey = '#6a6d72', light = mix(c, '#ffffff', 0.35);
+    // koła
+    m.wheel(0.2, -0.2, 0.21, 0.21, 0.12, RUBBER, '#9a9ca0'); m.wheel(0.2, 0.2, 0.21, 0.21, 0.12, RUBBER, '#9a9ca0');
+    m.wheel(-0.34, -0.16, 0.12, 0.12, 0.08, RUBBER, '#9a9ca0'); m.wheel(-0.34, 0.16, 0.12, 0.12, 0.08, RUBBER, '#9a9ca0');
+    // podwozie
+    m.box(-0.08, 0, 0.1, 0.62, 0.24, 0.12, dark);
+    // kadłub (młocarnia): zwężający się ku tyłowi, wyższy pośrodku
+    m.prism('y', [[-0.46, 0.2], [0.3, 0.2], [0.3, 0.6], [0.12, 0.64], [-0.4, 0.64], [-0.48, 0.52]], -0.165, 0.165, c, { capColor: shade(c, 0.92) });
+    // pas dekoracyjny i panele boczne (osłony z zawiasami)
+    for (const y of [-1, 1]) {
+      m.box(-0.08, y * 0.168, 0.46, 0.7, 0.004, 0.03, light);
+      m.box(-0.08, y * 0.168, 0.24, 0.7, 0.004, 0.014, shade(c, 0.75));
+      for (let i = 0; i < 4; i++) m.box(-0.38 + i * 0.16, y * 0.168, 0.26, 0.004, 0.005, 0.18, shade(c, 0.82));
+    }
+    // podajnik pochyły do hedera
+    m.prism('y', [[0.3, 0.22], [0.56, 0.06], [0.56, 0.2], [0.3, 0.46]], -0.12, 0.12, shade(c, 0.85));
+    // kabina z przodu nad podajnikiem: przeszklona, pochylona szyba czołowa, dach z belką świateł
+    m.box(0.25, 0, 0.6, 0.24, 0.3, 0.03, dark);
+    m.prism('y', [[0.14, 0.63], [0.36, 0.63], [0.39, 0.84], [0.14, 0.84]], -0.14, 0.14, GLASS);
+    for (const y of [-0.14, 0.14]) { m.prism('y', [[0.355, 0.63], [0.37, 0.63], [0.395, 0.84], [0.38, 0.84]], y - 0.008, y + 0.008, '#1e2022'); m.box(0.145, y, 0.63, 0.016, 0.016, 0.21, '#1e2022'); }
+    m.box(0.27, 0, 0.84, 0.3, 0.32, 0.035, c); m.box(0.27, 0, 0.875, 0.24, 0.26, 0.012, '#f2efe6');
+    for (const y of [-0.11, -0.04, 0.04, 0.11]) m.light(0.42, y, 0.85, 1.6, '#fff1c0');
+    m.box(0.41, 0, 0.848, 0.015, 0.28, 0.02, '#222');
+    m.cyl('z', 0.18, 0.1, 0.875, 0.016, 0.875, 0.905, '#f08a20', 6); m.light(0.18, 0.1, 0.905, 1, '#ffa040');
+    m.box(0.21, 0, 0.64, 0.06, 0.09, 0.1, '#3f5a8a'); m.cyl('z', 0.21, 0, 0.74, 0.03, 0.74, 0.8, '#e2b58d', 7);
+    // podest i drabinka po lewej
+    m.box(0.25, -0.18, 0.58, 0.22, 0.06, 0.012, grey);
+    m.box(0.15, -0.21, 0.58, 0.012, 0.012, 0.06, grey); m.box(0.35, -0.21, 0.58, 0.012, 0.012, 0.06, grey); m.box(0.25, -0.21, 0.635, 0.2, 0.01, 0.01, grey);
+    for (let k = 0; k < 5; k++) m.box(0.05, -0.19, 0.12 + k * 0.1, 0.05, 0.03, 0.008, grey);
+    // zbiornik ziarna: otwarty, z rozkładanymi nadstawkami (jaśniejsze), ziarno w środku wg fill
+    const tx0 = -0.3, tx1 = 0.12, ty = 0.2, tz0 = 0.64, tz1 = 0.76;
+    m.box((tx0 + tx1) / 2, 0, tz0, tx1 - tx0, ty * 2, 0.012, shade(c, 0.5));
+    for (const y of [-1, 1]) m.prism('x', [[y * (ty - 0.012), tz0], [y * ty, tz0], [y * (ty + 0.03), tz1 + 0.04], [y * (ty + 0.018), tz1 + 0.04]], tx0, tx1, y < 0 ? c : shade(c, 0.95));
+    m.prism('y', [[tx1 - 0.012, tz0], [tx1, tz0], [tx1 + 0.02, tz1 + 0.04], [tx1 + 0.008, tz1 + 0.04]], -ty - 0.02, ty + 0.02, shade(c, 0.97));
+    m.prism('y', [[tx0, tz0], [tx0 + 0.012, tz0], [tx0 - 0.008, tz1 + 0.04], [tx0 - 0.02, tz1 + 0.04]], -ty - 0.02, ty + 0.02, shade(c, 0.97));
+    for (const y of [-1, 1]) m.box((tx0 + tx1) / 2, y * (ty + 0.03), tz1 + 0.04, tx1 - tx0 + 0.04, 0.012, 0.012, '#d8d8d8');
     if (fill > 0.02) {
-      const h = 0.57 + 0.09 * fill;
-      m.box(-0.1, 0, 0.56, 0.3, 0.32, h - 0.56, '#e2bf55');
-      if (fill > 0.3) m.prism('x', [[-0.14, h], [0, h + 0.05 * fill], [0.14, h]], -0.22, 0.02, '#eccb63');
+      const h = tz0 + 0.012 + (tz1 + 0.02 - tz0) * fill, gcol = o.product || '#e2bf55';
+      m.box((tx0 + tx1) / 2, 0, tz0 + 0.012, tx1 - tx0 - 0.03, ty * 2 - 0.03, h - tz0 - 0.012, gcol);
+      if (fill > 0.35) m.prism('x', [[-ty + 0.03, h], [0, h + 0.07 * fill], [ty - 0.03, h]], tx0 + 0.04, tx1 - 0.04, shade(gcol, 1.08));
     }
-    // kabina z przodu (szeroka szyba)
-    cab(m, 0.2, 0, 0.36, 0.22, 0.3, 0.3, c);
-    // silnik z tyłu na górze + rura wydechowa
-    m.box(-0.33, 0, 0.44, 0.18, 0.3, 0.12, shade(c, 0.85));
-    exhaust(m, -0.36, -0.1, 0.56, 0.16, 0.014);
-    // rura wyładowcza
-    const ar = 0.028;
+    // silnik z tyłu: osłona z kratką chłodnicy i wydech
+    m.box(-0.39, 0, 0.64, 0.15, 0.3, 0.1, shade(c, 0.9));
+    m.box(-0.39, 0, 0.74, 0.12, 0.26, 0.008, '#2a2c2f');
+    for (let i = 0; i < 5; i++) m.box(-0.44 + i * 0.025, 0, 0.748, 0.006, 0.25, 0.004, '#5a5c60');
+    exhaust(m, -0.34, 0.12, 0.74, 0.12, 0.016);
+    // rozrzutnik słomy z tyłu
+    m.prism('y', [[-0.48, 0.18], [-0.44, 0.18], [-0.44, 0.44], [-0.52, 0.36]], -0.15, 0.15, dark);
+    for (const y of [-1, 1]) { m.box(-0.47, y * 0.12, 0.38, 0.02, 0.03, 0.02, '#e03030'); m.light(-0.48, y * 0.12, 0.39, 1, '#ff5040'); }
+    // rura wyładowcza (ślimak) po lewej
+    const ar = 0.03, bx = -0.2, by = -0.19;
+    m.cyl('z', bx, by, 0.5, ar * 1.2, 0.5, 0.86, STEEL, 8);
     if (out) {
-      m.cyl('y', -0.04, 0, 0.62, ar, -0.95, -0.12, STEEL, 8);
-      m.cyl('y', -0.04, -0.95, 0.55, ar * 1.2, -0.99, -0.9, shade(STEEL, 0.8), 8);  // wylot
-      m.anchor('auger', -0.04, -0.97, 0.55);
+      m.cyl('y', bx, 0, 0.86, ar, -1.02, by + 0.02, STEEL, 8);
+      m.box(bx, (-1.02 + by) / 2, 0.86 + ar, 0.012, Math.abs(-1.02 - by) - 0.04, 0.012, shade(STEEL, 0.7));
+      m.cyl('z', bx, -1.0, 0.72, ar * 1.25, 0.72, 0.86, shade(STEEL, 0.8), 8);               // króciec w dół
+      m.anchor('auger', bx, -1.0, 0.71);
     } else {
-      m.cyl('x', 0, -0.2, 0.62, ar, -0.42, 0.26, STEEL, 8);
-      m.anchor('auger', 0.26, -0.2, 0.62);
+      m.cyl('x', 0, by, 0.86, ar, bx, 0.42, STEEL, 8);
+      m.box(0.42, by, 0.8, 0.03, 0.03, 0.06, shade(STEEL, 0.8));
+      m.anchor('auger', 0.42, by, 0.8);
     }
-    // podajnik pochyły (do hedera)
-    m.prism('y', [[0.3, 0.2], [0.5, 0.1], [0.5, 0.22], [0.3, 0.34]], -0.12, 0.12, shade(c, 0.8));
-    m.anchor('front', 0.5, 0, 0.14); m.anchor('rear', -0.46, 0, 0.2);
-    m.anchor('headerMount', 0.5, 0, 0.1);
+    m.anchor('front', 0.56, 0, 0.14); m.anchor('rear', -0.5, 0, 0.2);
+    m.anchor('headerMount', 0.56, 0, 0.12);
+    m.anchor('exhaust', -0.34, 0.12, 0.86);
   };
   // heder zbożowy (szeroki, z nagarniaczem); rysowany jako osobna część przed kombajnem
   DEF.header = function (m, o) {
@@ -430,21 +576,21 @@
   }
   DEF.plow = function (m, o) {
     const c = col(o, '#8f2a22'), z = o.lowered ? 0 : 0.1, n = 3;
-    const len = 0.46;
-    // rama ukośna pługa zagonowego
-    m.prism('z', [[0.22, -0.03], [-0.24, 0.16], [-0.24, 0.2], [0.22, 0.01]], z + 0.14, z + 0.17, '#4a4c50');
-    m.box(0.2, 0, z + 0.06, 0.03, 0.16, 0.12, shade(c, 0.8));
+    // rama ukośna pługa (grube ceowniki) z wieżą zaczepu
+    m.prism('z', [[0.22, -0.035], [-0.3, 0.2], [-0.3, 0.25], [0.22, 0.015]], z + 0.15, z + 0.2, c);
+    m.box(0.2, 0, z + 0.06, 0.04, 0.2, 0.05, c);
+    m.prism('y', [[0.16, z + 0.08], [0.24, z + 0.08], [0.21, z + 0.28], [0.19, z + 0.28]], -0.02, 0.02, shade(c, 0.85));
     for (let i = 0; i < n; i++) {
-      const x = 0.1 - i * 0.16, y = 0.02 + i * 0.07;
-      m.box(x, y, z + 0.03, 0.02, 0.02, 0.13, '#4a4c50');                     // słupica
-      // odkładnica (zakrzywiona blacha) + lemiesz
-      m.prism('x', [[y - 0.02, z], [y + 0.09, z + 0.02], [y + 0.07, z + 0.09], [y - 0.01, z + 0.07]], x - 0.05, x + 0.03, c, { capColor: shade(c, 0.9) });
-      m.box(x - 0.01, y + 0.02, z, 0.08, 0.09, 0.012, STEEL);
+      const x = 0.1 - i * 0.17, y = 0.02 + i * 0.075;
+      m.box(x, y, z + 0.03, 0.03, 0.03, 0.14, '#3c3e42');                      // słupica
+      // odkładnica (skręcona blacha) — błyszcząca, z lemieszem
+      m.prism('x', [[y - 0.03, z], [y + 0.11, z + 0.02], [y + 0.1, z + 0.12], [y - 0.01, z + 0.09]], x - 0.08, x + 0.04, '#c9cdd2', { capColor: '#9ea3a8' });
+      m.box(x - 0.01, y + 0.03, z, 0.11, 0.1, 0.014, '#e8eaec');
+      m.box(x + 0.05, y - 0.02, z + 0.0, 0.03, 0.02, 0.02, '#e8eaec');           // krój
     }
-    // koło podporowe
-    m.wheel(-0.22, -0.1, z + 0.06, 0.06, 0.03, RUBBER, RIM);
+    m.wheel(-0.26, -0.08, z + 0.07, 0.07, 0.035, RUBBER, RIM);
+    m.box(-0.26, -0.03, z + 0.07, 0.03, 0.08, 0.02, c);
     m.anchor('mount', 0.22, 0, z + 0.1);
-    void len;
   };
   DEF.cultivator = function (m, o) {
     const c = col(o, '#2c6f8a'), z = o.lowered ? 0 : 0.1, W = 0.7;
@@ -525,6 +671,7 @@
   // ===================== MASZYNY CIĄGNIONE (dyszel) =====================
   function drawbar(m, x0, x1, z) { m.box((x0 + x1) / 2, 0, z, Math.abs(x1 - x0), 0.03, 0.025, '#4a4c50'); m.anchor('mount', Math.max(x0, x1), 0, z); }
   DEF.baler = function (m, o) {
+    m.anchor('pivot', -0.1, 0, 0); m.towed = true;
     const c = col(o, '#5b4a9b');
     m.wheel(-0.1, -0.22, 0.1, 0.1, 0.06, RUBBER, RIM); m.wheel(-0.1, 0.22, 0.1, 0.1, 0.06, RUBBER, RIM);
     // komora zwijania (walec poziomy) + podbieracz
@@ -535,6 +682,7 @@
     drawbar(m, 0.2, 0.46, 0.08);
   };
   DEF.manure_spreader = function (m, o) {
+    m.anchor('pivot', -0.12, 0, 0); m.towed = true;
     const c = col(o, '#7a5a3a'), fill = o.fill == null ? 0.6 : o.fill;
     m.wheel(-0.12, -0.2, 0.11, 0.11, 0.07, RUBBER, RIM); m.wheel(-0.12, 0.2, 0.11, 0.11, 0.07, RUBBER, RIM);
     m.prism('x', [[-0.16, 0.14], [0.16, 0.14], [0.19, 0.4], [-0.19, 0.4]], -0.34, 0.26, c, { noCaps: true });
@@ -546,6 +694,7 @@
     drawbar(m, 0.26, 0.5, 0.08);
   };
   DEF.tank = function (m, o) {
+    m.anchor('pivot', -0.08, 0, 0); m.towed = true;
     const c = col(o, '#7a5a3a');
     m.wheel(-0.08, -0.22, 0.12, 0.12, 0.08, RUBBER, RIM); m.wheel(-0.08, 0.22, 0.12, 0.12, 0.08, RUBBER, RIM);
     m.cyl('x', 0, 0, 0.32, 0.2, -0.36, 0.3, mix(c, '#6a7f3a', 0.5), 14);
@@ -554,6 +703,7 @@
     drawbar(m, 0.3, 0.52, 0.08);
   };
   DEF.potato_harvester = function (m, o) {
+    m.anchor('pivot', -0.14, 0, 0); m.towed = true;
     const c = col(o, '#6b8e23');
     m.wheel(-0.14, -0.24, 0.12, 0.12, 0.07, RUBBER, RIM); m.wheel(-0.14, 0.24, 0.12, 0.12, 0.07, RUBBER, RIM);
     m.box(-0.1, 0, 0.14, 0.6, 0.44, 0.22, c);
@@ -616,10 +766,21 @@
       m.box(0, 0, z0 + 0.02, Lb - bt * 2, Wb - bt * 2, top - z0 - 0.02, grain);
       if (fill > 0.45) m.prism('x', [[-Wb / 2 + bt, top], [0, top + 0.07 * (fill - 0.4)], [Wb / 2 - bt, top]], -Lb / 2 + bt + 0.04, Lb / 2 - bt - 0.04, shade(grain, 1.08));
     }
-    // dyszel
+    // dyszel: w dwuosiowej wychodzi z obrotnicy i skręca razem z przednią osią (steer); w pozostałych sztywny (dyszel w kształcie A)
     const hx = Lb / 2 + 0.16;
-    m.box(Lb / 2 + 0.08, 0, z0 - 0.06, 0.16, 0.03, 0.025, '#4a4c50');
-    m.anchor('mount', hx, 0, z0 - 0.06); m.anchor('rearHitch', -Lb / 2 - 0.03, 0, z0 - 0.06);
+    if (axle === 'dwuosiowa') {
+      const fx = Lb * 0.34, st = o.steer || 0, len = hx - fx, cs = Math.cos(st), sn = Math.sin(st);
+      const p0 = [fx + 0.05 * cs, 0.05 * sn], p1 = [fx + len * cs, len * sn];
+      const nx = -sn * 0.016, ny = cs * 0.016;
+      m.prism('z', [[p0[0] - nx * 3, p0[1] - ny * 3], [p1[0] - nx, p1[1] - ny], [p1[0] + nx, p1[1] + ny], [p0[0] + nx * 3, p0[1] + ny * 3]], z0 - 0.07, z0 - 0.045, '#3c3e42');
+      m.cyl('z', p1[0], p1[1], z0 - 0.08, 0.02, z0 - 0.08, z0 - 0.04, '#2a2c2f', 6);  // ucho dyszla
+      m.anchor('mount', hx, 0, z0 - 0.06); m.anchor('pivot', -Lb * 0.34, 0, 0); m.anchor('turntable', fx, 0, 0);
+    } else {
+      m.prism('z', [[Lb / 2 - 0.02, -Wb * 0.3], [hx, -0.012], [hx, 0.012], [Lb / 2 - 0.02, Wb * 0.3], [Lb / 2 - 0.02, Wb * 0.3 - 0.03], [hx - 0.04, 0], [Lb / 2 - 0.02, -Wb * 0.3 + 0.03]], z0 - 0.07, z0 - 0.045, '#3c3e42');
+      m.anchor('mount', hx, 0, z0 - 0.06);
+      m.anchor('pivot', axle === 'jednoosiowa' ? -0.05 : axle === 'tandem' ? 0.08 - R * 1.05 : 0.12 - R * 2.1, 0, 0);
+    }
+    m.anchor('rearHitch', -Lb / 2 - 0.03, 0, z0 - 0.06);
     m.anchor('rear', -Lb / 2, 0, z0);
     m.box(-Lb / 2, -Wb / 2 + 0.03, z0 - 0.02, 0.02, 0.03, 0.02, '#e03030'); m.box(-Lb / 2, Wb / 2 - 0.03, z0 - 0.02, 0.02, 0.03, 0.02, '#e03030');
     m.light(-Lb / 2 - 0.01, -Wb / 2 + 0.03, z0, 1, '#ff5040'); m.light(-Lb / 2 - 0.01, Wb / 2 - 0.03, z0, 1, '#ff5040');
@@ -676,6 +837,18 @@
         return;
       }
       fn(m, o);
+      if (o.upg != null) {
+        // rozbudowa: rusztowanie wzdłuż frontu, palety materiału i żółty żuraw
+        const d = dims(o, 1, 1), w = d.w * 0.92, h = d.h * 0.92, H = 0.62, S = '#c9a35a';
+        for (let i = 0; i <= 4; i++) { const x = -w / 2 + i * w / 4; m.box(x, h / 2 + 0.06, 0, 0.018, 0.018, H, S); m.box(x, h / 2 + 0.16, 0, 0.018, 0.018, H, S); }
+        for (let k = 1; k <= 3; k++) { m.box(0, h / 2 + 0.11, H * k / 3, w, 0.12, 0.012, '#a8875a'); m.box(0, h / 2 + 0.16, H * k / 3 + 0.08, w, 0.01, 0.01, S); }
+        m.box(w / 2 + 0.18, h / 2 - 0.05, 0, 0.16, 0.12, 0.06, '#b55a3a'); m.box(w / 2 + 0.18, h / 2 - 0.05, 0.06, 0.14, 0.1, 0.05, '#cfcac0');
+        m.box(-w / 2 - 0.12, -h / 2 + 0.12, 0, 0.1, 0.1, 0.06, '#e0b020');
+        m.cyl('z', -w / 2 - 0.12, -h / 2 + 0.12, 0.06, 0.018, 0.06, 1.25, '#e0b020', 6);
+        m.box(-w / 2 + 0.2, -h / 2 + 0.12, 1.22, 0.75, 0.035, 0.035, '#e0b020');
+        m.box(-w / 2 - 0.3, -h / 2 + 0.12, 1.2, 0.18, 0.06, 0.06, '#6a6c70');
+        m.box(-w / 2 + 0.45, -h / 2 + 0.12, 0.7, 0.004, 0.004, 0.52, '#3a3a3c');
+      }
     };
   }
   DEF.house = withConstruction(function (m, o) {
@@ -726,7 +899,7 @@
     for (let i = 0; i <= 3; i++) m.box(w / 2 - 0.02, -h / 2 + i * h / 3, 0.03, 0.04, 0.04, H, '#4a4c50');
     if (L >= 2) { m.box(w / 2 - 0.02, 0, 0.03 + H * 0.65, 0.04, h, H * 0.35, wall); }   // brama częściowo
     // dach pulpitowy (jednospadowy) z blachy falistej
-    m.prism('y', [[-w / 2 - 0.06, H + 0.03], [w / 2 + 0.06, H + 0.03 + 0.12], [w / 2 + 0.06, H + 0.06 + 0.12], [-w / 2 - 0.06, H + 0.06]], -h / 2 - 0.06, h / 2 + 0.06, ROOF_TIN);
+    m.prism('y', [[-w / 2 - 0.06, H + 0.03], [w / 2 + 0.06, H + 0.03 + 0.12], [w / 2 + 0.06, H + 0.06 + 0.12], [-w / 2 - 0.06, H + 0.06]], -h / 2 - 0.06, h / 2 + 0.06, SNOWF ? mix(ROOF_TIN, '#f3f5f8', SNOWF) : ROOF_TIN);
     for (let i = 0; i < 8; i++) m.box(-w / 2 + (i + 0.5) * w / 8, 0, H + 0.085 + 0.06 * (i + 0.5) / 8 * 2, 0.01, h + 0.1, 0.004, shade(ROOF_TIN, 1.12));
     // wnętrze ciemne
     m.box(-0.05, 0, 0.03, w - 0.14, h - 0.1, 0.004, '#4f5156');
