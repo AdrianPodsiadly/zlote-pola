@@ -284,7 +284,7 @@
     ziemniak_1: {
       name: 'Bulwa Z-1 Bunkier', brand: 'Bulwa', cat: 'potato_harvester', ops: ['harvest'], reqHp: 75, width: 0.75, speed: 4, cap: 4, load: 0.8,
       crops: ['ziemniaki'], mode: 'root', price: 195000, rentPerDay: 700, model: 'potato_harvester', color: COL.bulwa, life: 3000,
-      desc: 'Kombajn ziemniaczany 1-rzędowy z bunkrem 4 t. Pełny bunkier wysypuje na pryzmę przy drodze (albo do przyczepy).'
+      desc: 'Kombajn ziemniaczany 1-rzędowy z bunkrem 4 t. Pełny bunkier przeładowuje na przyczepę jadącą obok.'
     },
     ziemniak_2: {
       name: 'Bulwa Z-2 Duo', brand: 'Bulwa', cat: 'potato_harvester', ops: ['harvest'], reqHp: 120, width: 1.5, speed: 5, cap: 7, load: 0.85,
@@ -304,7 +304,7 @@
     sieczkarnia_p: {
       name: 'Kiszon S-2 Ciągana', brand: 'Kiszon', cat: 'forage_harvester', ops: ['harvest'], reqHp: 120, width: 1.5, speed: 5, cap: 0, load: 0.95,
       crops: ['kukurydza', 'kiszonka'], mode: 'silage', price: 125000, rentPerDay: 550, model: 'forage_harvester', color: COL.kiszon, life: 3000,
-      desc: 'Sieczkarnia ciągana 2-rzędowa na kiszonkę z kukurydzy. Bez przyczepy obok pracuje o 40 % wolniej.'
+      desc: 'Sieczkarnia ciągana 2-rzędowa na kiszonkę z kukurydzy. Bez zbiornika — pracuje tylko z przyczepą jadącą równolegle.'
     },
     sieczkarnia_s: {
       name: 'Kiszon SX-8 Samojezdna', brand: 'Kiszon', cat: 'forage_harvester', ops: ['harvest'], self: true, hp: 600, width: 6, speed: 7, cap: 0,
