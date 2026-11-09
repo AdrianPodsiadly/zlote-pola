@@ -867,7 +867,7 @@
       row.appendChild(h('button.btn.sm.primary' + (canDrive ? '' : '.disabled'), { disabled: !canDrive, title: canDrive ? '' : 'wkrótce', onclick: () => U.driveStart(v.uid) }, '🕹️ Prowadź', !canDrive ? h('span.sub', 'wkrótce') : null));
       if (G.machines && G.machines.actions && v.uid != null) {
         row.appendChild(h('button.btn.sm', { onclick: () => U.setTargetMode(true) }, '📍 Wskaż cel'));
-        const acts = (() => { try { return G.machines.actions(v.uid, null) || []; } catch (e) { return []; } })().filter(a => ['garage', 'stop', 'refuel', 'unhitch', 'raise', 'lower'].includes(a.id));
+        const acts = (() => { try { return G.machines.actions(v.uid, null) || []; } catch (e) { return []; } })().filter(a => ['assign_driver', 'garage', 'stop', 'refuel', 'unhitch', 'raise', 'lower'].includes(a.id));
         for (const a of acts) row.appendChild(h('button.btn.sm' + (a.enabled === false ? '.disabled' : ''), { disabled: a.enabled === false, title: a.reason || '', onclick: () => U.runAction(v, a.id, null) }, (a.icon || '') + ' ' + a.label));
       }
       if (m && !j) row.appendChild(h('button.btn.sm.ghost', { onclick: () => { U.open('machines', { tab: 'own' }); } }, '🔧 Serwis'));

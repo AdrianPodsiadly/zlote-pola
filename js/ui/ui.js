@@ -508,6 +508,16 @@
   };
   U.runAction = function (v, id, tileIdx, params) {
     try {
+      // akcje z wyborem (kierowca, uprawa do siewu, nawóz) — najpierw zapytaj gracza
+      if (params == null && G.ui.askParams) {
+        let a = null;
+        try { a = (G.machines.actions(v.uid, tileIdx) || []).find(x => x.id === id); } catch (e) { a = null; }
+        if (a && id === 'assign_driver' && a.choices && a.choices.length) {
+          G.ui.askParams({ key: 'worker', title: '👤 Kierowca', label: 'Kto ma prowadzić?', choices: a.choices }, p => U.runAction(v, id, tileIdx, p));
+          return;
+        }
+        if (a && a.needParams) { G.ui.askParams(a.needParams, p => U.runAction(v, id, tileIdx, p)); return; }
+      }
       const r = G.machines.command(v.uid, id, tileIdx, params || {});
       if (r && r.needParams && G.ui.askParams) { G.ui.askParams(r.needParams, p => U.runAction(v, id, tileIdx, p)); return; }
       if (U.result(r, null)) { G.view.highlight = tileIdx != null ? [tileIdx] : []; U.sfx('ui_confirm'); if (id === 'drive' && G.ui.driveStart) G.ui.driveStart(v.uid); }

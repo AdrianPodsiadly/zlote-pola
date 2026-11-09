@@ -319,6 +319,10 @@
   };
   // okienko parametrów (np. uprawa do siewu / nawóz) — spec: { title, fields: [{ key, label, type: 'select'|'number', options: [{value,label}], min, max, step, value }] }
   U.askParams = function (spec, onOk, onCancel) {
+    // format z symulacji: { key, label, choices: [{id, label, icon}] } → format formularza { title, fields: [...] }
+    if (spec && spec.choices && !spec.fields) {
+      spec = { title: spec.title || spec.label, fields: [{ key: spec.key || 'value', label: spec.label || 'Wybierz', options: spec.choices.map(c => ({ value: c.id, label: (c.icon ? c.icon + ' ' : '') + c.label + (c.current ? ' ✓' : '') })) }] };
+    }
     const vals = {}, body = h('div');
     for (const f of (spec.fields || [])) {
       vals[f.key] = f.value != null ? f.value : (f.options && f.options[0] ? f.options[0].value : (f.min || 0));

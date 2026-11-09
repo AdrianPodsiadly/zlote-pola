@@ -1,5 +1,9 @@
 # Złote Pola — historia zmian
 
+## 0.1.2
+- Naprawione **przydzielanie kierowcy**: menu pytało o nic i od razu wysadzało kierowcę. Teraz pojawia się wybór (Ty / pracownicy), a w karcie pojazdu jest przycisk „Przydziel kierowcę”.
+- Okienka wyboru z symulacji (uprawa do siewu, nawóz przy rozkazie „Obrób”) wyświetlają się poprawnie.
+
 ## 0.1.1
 - **Ustawienia → Rozgrywka:** przełącznik **Pory roku** (wyłączone = zawsze sezon wegetacyjny: klimat i wygląd czerwca, siew dowolnej uprawy w każdej chwili, bez zimy) i **Realistyczna pogoda w pracach**.
 - Domyślnie prace polowe idą w każdą pogodę — **tylko zbiór i prasowanie nie w deszczu** (i chwilę po nim, aż łan/słoma obeschnie).
