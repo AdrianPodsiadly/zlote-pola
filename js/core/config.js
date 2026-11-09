@@ -1,7 +1,7 @@
 // Złote Pola — konfiguracja rdzenia (wspólna dla wszystkich modułów)
 window.G = window.G || {};
 (function () {
-  G.VERSION = '0.1.2';
+  G.VERSION = '0.1.3';
   G.SAVE_VERSION = 1;
 
   // Typy terenu (NIE zmieniaj numerów — są w zapisach; nowe dopisuj na końcu)

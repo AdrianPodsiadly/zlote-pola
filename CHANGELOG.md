@@ -1,5 +1,8 @@
 # Złote Pola — historia zmian
 
+## 0.1.3
+- Naprawione rozkazy z menu pojazdu („Jedź tutaj”, „Obrób działkę”): interfejs podawał cel jako numer kafla, a symulacja oczekiwała obiektu — każdy cel wychodził „Poza mapą”.
+
 ## 0.1.2
 - Naprawione **przydzielanie kierowcy**: menu pytało o nic i od razu wysadzało kierowcę. Teraz pojawia się wybór (Ty / pracownicy), a w karcie pojazdu jest przycisk „Przydziel kierowcę”.
 - Okienka wyboru z symulacji (uprawa do siewu, nawóz przy rozkazie „Obrób”) wyświetlają się poprawnie.

@@ -1254,7 +1254,10 @@
     return { ok: true, op, spec };
   }
 
+  // cel może przyjść jako sam indeks kafla (tak podaje interfejs) albo obiekt { tile | parcelId | machineUid | buildingUid }
+  const normTarget = t => (typeof t === 'number' ? (t >= 0 ? { tile: t } : null) : t || null);
   M.actions = function (uid, target) {
+    target = normTarget(target);
     let m = M.get(uid);
     if (!m) return [];
     target = target || null;
@@ -1411,6 +1414,7 @@
   };
 
   M.command = function (uid, actionId, target, params) {
+    target = normTarget(target);
     params = params || {};
     let m = M.get(uid);
     if (!m) return { ok: false, reason: 'Brak maszyny' };
