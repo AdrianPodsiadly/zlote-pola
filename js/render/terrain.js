@@ -31,16 +31,16 @@
     const d = G.date(), snowCm = (G.weather && G.weather.snow) || 0;
     const snow = snowCm <= 0.05 ? 0 : snowCm < 2 ? 1 : snowCm < 8 ? 2 : 3;
     const frozen = !!(G.weather && G.weather.frozen);
-    const key = d.month + '|' + snow + '|' + (frozen ? 1 : 0);
+    const key = G.cm(d) + '|' + snow + '|' + (frozen ? 1 : 0);
     if (key !== lookKey) {
       lookKey = key;
       const sf = [0, 0.55, 0.85, 1][snow];
       lookInfo = {
-        month: d.month, snow, frozen, key, sf,
-        grass: mix(GRASS_M[d.month], SNOW, sf), grassDark: mix(shade(GRASS_M[d.month], 0.85), SNOW, sf * 0.9),
-        meadow: mix(shade(GRASS_M[d.month], 1.06), SNOW, sf),
-        autumn: d.month >= 8 && d.month <= 10, winterTrees: d.month === 11 || d.month <= 1 || (d.month === 2 && snow > 0),
-        flowers: d.month >= 4 && d.month <= 6 && snow === 0
+        month: G.cm(d), snow, frozen, key, sf,
+        grass: mix(GRASS_M[G.cm(d)], SNOW, sf), grassDark: mix(shade(GRASS_M[G.cm(d)], 0.85), SNOW, sf * 0.9),
+        meadow: mix(shade(GRASS_M[G.cm(d)], 1.06), SNOW, sf),
+        autumn: G.cm(d) >= 8 && G.cm(d) <= 10, winterTrees: G.cm(d) === 11 || G.cm(d) <= 1 || (G.cm(d) === 2 && snow > 0),
+        flowers: G.cm(d) >= 4 && G.cm(d) <= 6 && snow === 0
       };
     }
     return lookInfo;

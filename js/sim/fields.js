@@ -116,7 +116,7 @@
     if (d <= 0.2) return d < -0.8 ? 1 - (-d - 0.8) * 0.08 : 1;
     return Math.max(0.45, 1 - 0.22 * c.phSens * (d - 0.2));
   };
-  function cropYearFor(cropId, d) { const c = G.CROPS[cropId]; return d.year + (c.winter && d.month >= 6 ? 1 : 0); }
+  function cropYearFor(cropId, d) { const c = G.CROPS[cropId]; return d.year + (c.winter && G.cm(d) >= 6 ? 1 : 0); }
 
   // ocena płodozmianu dla uprawy na polu → { f (mnożnik), bad (bool), text }
   F.rotation = function (f, cropId) {
@@ -140,6 +140,7 @@
   // termin siewu → mnożnik (0 = niedozwolony)
   F.sowTiming = function (cropId, month) {
     const c = G.CROPS[cropId]; if (!c) return 0;
+    if (G.opt('seasons') === false) return 1;           // bez pór roku: każdy termin siewu jest dobry
     if (c.sowMonths.indexOf(month) >= 0) return 1;
     const last = c.sowMonths[c.sowMonths.length - 1], first = c.sowMonths[0];
     if (month === (last + 1) % 12) return 0.85;   // spóźniony siew
@@ -396,7 +397,7 @@
     const g0 = f.growth;
     f.gdd += dg;
     // oziminy: przed jaryzacją (VIII–II) rozwój zatrzymuje się na fazie krzewienia/rozety — wczesny siew nie przyspiesza żniw
-    if (c.winter && d.month >= 2 && d.month <= 6) f.vern = true;            // wiosna = po jaryzacji
+    if (c.winter && G.cm(d) >= 2 && G.cm(d) <= 6) f.vern = true;            // wiosna = po jaryzacji
     if (c.winter && !f.vern) f.gdd = Math.min(f.gdd, c.gdd * (c.autumnMax || 0.25));
     f.growth = Math.min(1, f.gdd / c.gdd);
     const dG = Math.max(0, f.growth - g0);
@@ -461,7 +462,7 @@
     }
     // jesienny mróz kończy wegetację upraw jarych: dojrzałe w ≥ 75% → wymuszone dojrzewanie (plon niższy),
     // mniej → rośliny giną (zostaje resztka plonu)
-    if (!c.winter && f.phase !== 'ripe' && f.growth > 0.35 && wx.tmin < -3 && d.month >= 8) {
+    if (!c.winter && f.phase !== 'ripe' && f.growth > 0.35 && wx.tmin < -3 && G.cm(d) >= 8) {
       const g = f.growth;
       lose(f, 'mróz', g >= 0.75 ? (1 - g) * 1.6 : 0.6 + (0.75 - g));
       f.growth = 1; f.gdd = c.gdd; f.phase = 'ripe'; f.ripeDays = 0;
@@ -478,7 +479,7 @@
   }
 
   function meadowDay(f, p, c, wx, d, moist, player) {
-    if (d.month === 2 && d.dom === 1) { f.cuts = 0; f.gdd = Math.min(f.gdd, 30); f.growth = Math.min(f.growth, 0.08); }
+    if (G.cm(d) === 2 && d.dom === 1) { f.cuts = 0; f.gdd = Math.min(f.gdd, 30); f.growth = Math.min(f.growth, 0.08); }
     if (f.phase === 'grass') {
       const water = moist < 0.35 ? clamp(moist / 0.35, 0.25, 1) : 1;
       const need = f.cuts === 0 ? c.gddFirst : c.gdd;
@@ -490,8 +491,8 @@
       if (player) for (const key of ['n', 'p', 'k']) { const dem = c[key + 'Need'] * dG, take = Math.min(Math.max(0, f[key]), dem); f.up[key] += take; f[key] -= take; }
       if (moist < 0.3) lose(f, 'susza', 0.02 * c.droughtSens);
       if (f.growth > 1.15) f.quality = clamp(f.quality - 0.03, 0.55, 1);   // przerośnięta trawa drewnieje
-      if (d.month >= 10 || d.month <= 1) { f.growth = Math.min(f.growth, Math.max(0.15, f.growth - 0.15)); f.gdd = f.growth * need; }
-      if (player && g0 < 1 && f.growth >= 1 && d.month >= 4 && d.month <= 8) G.notify('🌿 ' + p.name + ': trawa gotowa do koszenia (' + (f.cuts + 1) + '. pokos)', 'good', { parcel: p.id, key: 'mow' + p.id });
+      if (G.cm(d) >= 10 || G.cm(d) <= 1) { f.growth = Math.min(f.growth, Math.max(0.15, f.growth - 0.15)); f.gdd = f.growth * need; }
+      if (player && g0 < 1 && f.growth >= 1 && G.cm(d) >= 4 && G.cm(d) <= 8) G.notify('🌿 ' + p.name + ': trawa gotowa do koszenia (' + (f.cuts + 1) + '. pokos)', 'good', { parcel: p.id, key: 'mow' + p.id });
     } else if (f.phase === 'mown') {
       const t = wx.type, rain = wx.rainFell;
       if (rain > 1) { f.dry = clamp(f.dry - 0.25, 0, 1); f.swath *= 0.93; f.quality = clamp(f.quality - 0.08, 0.4, 1); }
@@ -532,7 +533,7 @@
   }
   function npcDaily(f, p, d) {
     const n = f.npc; if (!n || n.task) return;
-    const m = d.month, wet = G.S.weather && G.S.weather.today && G.S.weather.today.rain > 6;
+    const m = G.cm(d), wet = G.S.weather && G.S.weather.today && G.S.weather.today.rain > 6;
     const task = (op, extra) => { n.task = Object.assign({ op, start: G.S.tick + 6 + ((rnd() * 3) | 0), dur: 5 + Math.min(10, p.area * 0.8) }, extra || {}); };
     if (wet || (G.S.weather && G.S.weather.frozen)) return;
     switch (f.phase) {
@@ -628,8 +629,8 @@
     if (op === 'sow') {
       const c = G.CROPS[params.crop];
       if (!c || c.meadow) return { ok: false, reason: 'Wybierz uprawę do siewu' };
-      const t = F.sowTiming(params.crop, d.month);
-      if (!t) return { ok: false, reason: 'Termin siewu: ' + monthsText(c.sowMonths) + ' (teraz ' + G.MONTHS[d.month] + ')' };
+      const t = F.sowTiming(params.crop, G.cm(d));
+      if (!t) return { ok: false, reason: 'Termin siewu: ' + monthsText(c.sowMonths) + ' (teraz ' + G.MONTHS[G.cm(d)] + ')' };
       if (t < 1) warn = 'Termin nieoptymalny — plon ok. ' + Math.round((1 - t) * 100) + '% niższy';
       if (params.crop === 'ziemniaki' && f.tilled !== 'plow') return { ok: false, reason: 'Ziemniaki wymagają orki przed sadzeniem' };
       const rot = F.rotation(f, params.crop);
@@ -638,10 +639,10 @@
     if (op === 'fertilize') {
       const id = params.product || 'saletra';
       if (F.OPS.fertilize.products.indexOf(id) < 0) return { ok: false, reason: 'Nieznany nawóz' };
-      if (d.month === 11 || d.month <= 1) return { ok: false, reason: 'Program azotanowy: zakaz nawożenia od 1 grudnia do końca lutego' };
+      if (G.cm(d) === 11 || G.cm(d) <= 1) return { ok: false, reason: 'Program azotanowy: zakaz nawożenia od 1 grudnia do końca lutego' };
       if ((id === 'obornik' || id === 'gnojowica') && (f.phase === 'sown' || f.phase === 'growing')) return { ok: false, reason: 'Nawozy naturalne stosuj przed orką/siewem (nie na rosnącą uprawę)' };
       if (id === 'saletra' && f.crop && G.CROPS[f.crop] && f.growth > 0.75) warn = 'Za późno — azot już prawie nie zwiększy plonu';
-      if (id === 'saletra' && !f.crop && d.month >= 8) warn = 'Azot jesienią na puste pole w dużej części wypłucze się przez zimę';
+      if (id === 'saletra' && !f.crop && G.cm(d) >= 8) warn = 'Azot jesienią na puste pole w dużej części wypłucze się przez zimę';
     }
     if (op === 'spray') {
       const id = params.product || 'herbicyd';
@@ -814,7 +815,7 @@
           const rot = F.rotation(f, cid);
           f.crop = cid; f.phase = 'sown'; f.growth = 0; f.gdd = 0; f.plantedAt = d.dayIndex; f.cropYear = cropYearFor(cid, d);
           f.up = { n: 0, p: 0, k: 0 }; f.yp = 1; f.loss = {}; f.lateLoss = 0; f.ripeDays = 0; f.quality = 1; f.prot = {}; f.lostWarn = 0; f.vern = false;
-          f.rotF = rot.f; f.rotBad = rot.bad; f.sowF = F.sowTiming(cid, d.month) || 0.8; f.bedF = bed; f.cover = cov; f.luck = 0.95 + rnd() * 0.1;
+          f.rotF = rot.f; f.rotBad = rot.bad; f.sowF = F.sowTiming(cid, G.cm(d)) || 0.8; f.bedF = bed; f.cover = cov; f.luck = 0.95 + rnd() * 0.1;
           f.disease = rot.bad ? 0.03 : 0.01; f.pests = 0.01;
           f.weeds = tilled === 'min' ? Math.max(0.15, f.weeds) : Math.max(0.03, f.weeds * 0.5);
           if (tilled === 'min') f.flags.noTill = d.year;
@@ -929,7 +930,7 @@
     const g = f.growth;
     if (f.phase === 'ripe') return 'dojrzałość pełna';
     if (f.phase === 'sown') return 'kiełkowanie';
-    if (c.winter && !c.meadow && (d.month >= 11 || d.month <= 1) && g < 0.4) return 'spoczynek zimowy';
+    if (c.winter && !c.meadow && (G.cm(d) >= 11 || G.cm(d) <= 1) && g < 0.4) return 'spoczynek zimowy';
     const T = {
       grain: [[0.08, 'wschody'], [0.3, 'krzewienie'], [0.5, 'strzelanie w źdźbło'], [0.65, 'kłoszenie i kwitnienie'], [0.9, 'nalewanie ziarna'], [1.01, 'dojrzewanie']],
       rapeseed: [[0.3, 'rozeta'], [0.45, 'pąkowanie'], [0.6, 'kwitnienie'], [0.85, 'tworzenie łuszczyn'], [1.01, 'dojrzewanie']],
@@ -945,7 +946,7 @@
 
   // zalecane zabiegi na działce: [{ op, params, label, why, priority (1 pilne … 3 do rozważenia), ok, reason }]
   function recommend(f, p) {
-    const d = G.date(), m = d.month, out = [], c = G.CROPS[f.crop];
+    const d = G.date(), m = G.cm(d), out = [], c = G.CROPS[f.crop];
     const add = (op, params, label, why, priority) => {
       const r = check(f, p, op, params);
       out.push({ op, params, label, why, priority, ok: r.ok, reason: r.reason || r.warn || '' });
@@ -1032,8 +1033,8 @@
       const c = G.CROPS[id];
       // dni do najbliższego terminu siewu
       let soon = 99;
-      for (let k = 0; k < 12; k++) { if (F.sowTiming(id, (d.month + k) % 12) >= 1) { soon = k === 0 ? 0 : k * C.DAYS_PER_MONTH - (d.dom - 1); break; } }
-      const okNow = F.sowTiming(id, d.month) > 0;
+      for (let k = 0; k < 12; k++) { if (F.sowTiming(id, (G.cm(d) + k) % 12) >= 1) { soon = k === 0 ? 0 : k * C.DAYS_PER_MONTH - (d.dom - 1); break; } }
+      const okNow = F.sowTiming(id, G.cm(d)) > 0;
       const rot = F.rotation(f, id);
       // prognoza przy pełnym nawożeniu i ochronie, z typowymi stratami (~12%) i dodatkowym ryzykiem przy złym płodozmianie
       const y = c.yieldBase * F.soilFactor(id, f.soil) * F.phFactor(id, f.ph + f.phPend) * rot.f * 0.88 * (rot.bad ? 0.92 : 1);

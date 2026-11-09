@@ -57,7 +57,8 @@
       map: null,           // { t: [], soil: [], parcel: [], v: [] } — tablice W*H
       parcels: [],         // działki
       farm: null,          // { yard: {x,y,w,h}, name }
-      nextId: 1
+      nextId: 1,
+      opts: { seasons: true, realWeather: false } // ustawienia rozgrywki (zapisywane z grą)
     };
   };
 
@@ -131,6 +132,15 @@
     return G.fmtNum(q, u === 'szt' || u === 'bela' ? 0 : 2) + ' ' + u;
   };
   G.uid = () => G.S.nextId++;
+
+  // ---------- ustawienia rozgrywki ----------
+  // seasons: false → wieczny sezon wegetacyjny (klimat i wygląd czerwca, siew bez terminów, bez zimy)
+  // realWeather: true → realistyczne ograniczenia prac w złą pogodę; false → pracujesz zawsze, tylko zbiór/prasowanie nie w deszczu
+  G.opt = function (k) { const o = (G.S && G.S.opts) || {}; return o[k] === undefined ? G.defaultState(0).opts[k] : o[k]; };
+  G.setOpt = function (k, v) { if (!G.S.opts) G.S.opts = {}; G.S.opts[k] = v; G.emit('optChanged', k, v); G.emit('mapChanged'); };
+  // miesiąc „klimatyczny” — używaj zamiast d.month wszędzie tam, gdzie chodzi o porę roku, a nie o kalendarz
+  G.SEASONLESS_MONTH = 5; // czerwiec
+  G.cm = function (d) { d = d || G.date(); return G.opt('seasons') === false ? G.SEASONLESS_MONTH : d.month; };
 
   // ---------- nowa gra ----------
   G.newGame = function (seed) {

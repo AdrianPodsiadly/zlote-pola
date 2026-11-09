@@ -41,12 +41,14 @@
 
   // klimat dla dnia roku z interpolacją między środkami miesięcy (doy 0..71)
   function clim(arr, dayIndex) {
-    const C = G.CFG, mf = (C.START_MONTH * C.DAYS_PER_MONTH + dayIndex + 0.5) / C.DAYS_PER_MONTH - 0.5; // miesiąc ułamkowy
+    const C = G.CFG;
+    if (G.opt('seasons') === false) return arr[G.SEASONLESS_MONTH]; // bez pór roku: zawsze klimat czerwca
+    const mf = (C.START_MONTH * C.DAYS_PER_MONTH + dayIndex + 0.5) / C.DAYS_PER_MONTH - 0.5; // miesiąc ułamkowy
     const m0 = Math.floor(mf), a = mf - m0;
     return arr[((m0 % 12) + 12) % 12] * (1 - a) + arr[(((m0 + 1) % 12) + 12) % 12] * a;
   }
   W.clim = clim;
-  function monthOf(dayIndex) { return (G.CFG.START_MONTH + Math.floor(dayIndex / G.CFG.DAYS_PER_MONTH)) % 12; }
+  function monthOf(dayIndex) { return G.opt('seasons') === false ? G.SEASONLESS_MONTH : (G.CFG.START_MONTH + Math.floor(dayIndex / G.CFG.DAYS_PER_MONTH)) % 12; }
 
   // ---------- generator dnia ----------
   function genDay(d, prev) {
@@ -199,6 +201,16 @@
     const S = G.S && G.S.weather;
     if (!S || !S.cur) return { ok: true };
     const c = S.cur;
+    if (!G.opt('realWeather')) {
+      // Tryb łagodny (domyślny): prace polowe w każdą pogodę; tylko zbioru i prasowania nie robi się w deszczu i na mokrym łanie
+      if (op === 'harvest' || op === 'bale') {
+        const wet = c.type === 'storm' || ((c.type === 'rain' || c.type === 'snow') && c.intensity > 0.15);
+        if (wet) return { ok: false, reason: op === 'harvest' ? 'Pada — kombajn nie zbiera w deszczu' : 'Pada — nie prasuje się mokrej słomy', waitH: 1 };
+        const need = op === 'harvest' ? 2 : 3;
+        if (S.dryH < need) return { ok: false, reason: (op === 'harvest' ? 'Łan obsycha po deszczu' : 'Słoma obsycha po deszczu') + ' (jeszcze ~' + Math.ceil(need - S.dryH) + ' h)', waitH: Math.ceil(need - S.dryH) };
+      }
+      return { ok: true };
+    }
     if (c.type === 'storm') return { ok: false, reason: 'Burza — zjedź z pola', waitH: 2 };
     if (c.type === 'rain' && c.intensity > 0.15) return { ok: false, reason: 'Pada deszcz — prace polowe wstrzymane', waitH: Math.max(1, S.today.re - G.S.tick % 24) };
     if (c.type === 'snow' && c.intensity > 0.1) return { ok: false, reason: 'Pada śnieg', waitH: 3 };

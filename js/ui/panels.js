@@ -887,6 +887,11 @@
       const seg = h('div.seg', { style: { display: 'flex' } });
       for (const sec in G.CFG.DAY_LENGTHS) seg.appendChild(h('button' + (+sec === G.CFG.DAY_SEC ? '.on' : ''), { style: { flex: 1 }, onclick: () => { G.setDayLength(+sec); U.rerender(); } }, G.CFG.DAY_LENGTHS[sec]));
       body.appendChild(h('div.card', h('div.small.muted', 'Długość doby w grze przy tempie 1×. Krótsza doba = szybsza gra.'), seg));
+      body.appendChild(h('div.section', 'Rozgrywka'));
+      const rc = h('div.card');
+      rc.appendChild(toggle('Pory roku', G.opt('seasons') ? 'zima, wiosna, lato, jesień — terminy siewu i zbioru' : 'wyłączone: zawsze sezon wegetacyjny, siew w dowolnym momencie', G.opt('seasons') !== false, () => { G.setOpt('seasons', G.opt('seasons') === false); G.notify(G.opt('seasons') ? '🍂 Pory roku włączone' : '☀️ Pory roku wyłączone — zawsze sezon wegetacyjny', 'info'); U.rerender(); }));
+      rc.appendChild(toggle('Realistyczna pogoda w pracach', G.opt('realWeather') ? 'deszcz, mróz, mokra gleba i wiatr wstrzymują prace' : 'pracujesz w każdą pogodę — tylko zbiór i prasowanie nie w deszczu', !!G.opt('realWeather'), () => { G.setOpt('realWeather', !G.opt('realWeather')); U.rerender(); }));
+      body.appendChild(rc);
       body.appendChild(h('div.section', 'Dźwięk'));
       const sc = h('div.card');
       if (G.sound && G.sound.CHANNELS) {

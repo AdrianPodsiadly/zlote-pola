@@ -1,5 +1,10 @@
 # Złote Pola — historia zmian
 
+## 0.1.1
+- **Ustawienia → Rozgrywka:** przełącznik **Pory roku** (wyłączone = zawsze sezon wegetacyjny: klimat i wygląd czerwca, siew dowolnej uprawy w każdej chwili, bez zimy) i **Realistyczna pogoda w pracach**.
+- Domyślnie prace polowe idą w każdą pogodę — **tylko zbiór i prasowanie nie w deszczu** (i chwilę po nim, aż łan/słoma obeschnie).
+- Kury nie głodują na starcie: więcej paszy w magazynie i domyślnie włączony auto-zakup paszy treściwej.
+
 ## 0.1.0 — pierwsza grywalna wersja
 - Mapa izometryczna 96×96 (ok. 2300 ha): rzeka, wieś, asfalt, drogi polne, lasy, 150+ działek z klasami gleby I–VI.
 - Start: gospodarstwo po dziadku — dom, stodoła, kurnik z 12 kurami, garaż, stary ciągnik 60 KM, pług, przyczepa, 3 pola i łąka, 60 000 zł i kredyt.

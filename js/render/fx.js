@@ -125,7 +125,7 @@
     if (ambT < 0.25) return;
     ambT = 0;
     if (!G.S) return;
-    const d = G.date(), m = d.month, vr = ISO.visibleRange(0), S = G.S, T = G.T;
+    const d = G.date(), m = G.cm(d), vr = ISO.visibleRange(0), S = G.S, T = G.T;
     const wt = G.weather && G.weather.type;
     const area = (vr.x1 - vr.x0 + 1) * (vr.y1 - vr.y0 + 1);
     if (area <= 0) return;

@@ -16,7 +16,7 @@
   const SC = () => G.ANIMAL_DAY_SCALE || 365 / 72;
   A.SCALE = SC;
 
-  const DEFAULT_OPTS = { autoBuy: false, feedGrains: true, autoSell: true, autoSellEggs: true, raiseHeifers: false, grazing: true, autoVet: true };
+  const DEFAULT_OPTS = { autoBuy: true,  feedGrains: true, autoSell: true, autoSellEggs: true, raiseHeifers: false, grazing: true, autoVet: true };
   const st = () => G.S.animals;
   const herdsArr = () => (G.S && G.S.animals && G.S.animals.herds) || [];
   const bget = uid => (G.buildings && G.buildings.get) ? G.buildings.get(uid) : ((G.S.buildings || []).find(b => b.uid === uid) || null);
@@ -244,7 +244,7 @@
     return Math.min(0.85, ha * 2.5 / lu) * sea;
   }
   A.pasture = function () {
-    const m = G.date().month, ha = meadowParcels().reduce((a, p) => a + p.area, 0);
+    const m = G.cm(), ha = meadowParcels().reduce((a, p) => a + p.area, 0);
     return { ha, frac: pastureFrac(m), season: pastureSeason(m) > 0, grazing: st().opts.grazing };
   };
 
@@ -311,7 +311,7 @@
   const ordered = () => herdsArr().slice().sort((a, b) => G.ANIMAL_ORDER.indexOf(a.species) - G.ANIMAL_ORDER.indexOf(b.species));
 
   function dryRun() {
-    const inv = virtualInv(), pf = pastureFrac(G.date().month), out = { herds: [], ate: {}, wantPasza: 0, pf };
+    const inv = virtualInv(), pf = pastureFrac(G.cm()), out = { herds: [], ate: {}, wantPasza: 0, pf };
     for (const h of ordered()) {
       const r = feedHerd(h, inv, pf);
       out.herds.push({ h, r });
@@ -325,7 +325,7 @@
   A.needs = function () {
     const n = SC(), full = {}, comps = [];
     // pełne zapotrzebowanie wg pierwszej (preferowanej) paszy każdego składnika
-    const pf = pastureFrac(G.date().month);
+    const pf = pastureFrac(G.cm());
     for (const h of ordered()) {
       const sp = G.ANIMALS[h.species], heads = headsEq(h);
       for (const comp of sp.ration) {
@@ -387,7 +387,7 @@
       if (x.count <= 0) continue;
       const sp = G.ANIMALS[x.species], b = bget(x.buildingUid), mul = b ? (bdef(b).laborMul || 1) : 1;
       let need = sp.laborH * headsEq(x) * mul;
-      if (x.species === 'pszczoly') need *= (G.date().month >= 3 && G.date().month <= 8) ? 1.6 : 0.3;
+      if (x.species === 'pszczoly') need *= (G.cm() >= 3 && G.cm() <= 8) ? 1.6 : 0.3;
       h += Math.max(sp.laborMin || 0, need);
     }
     if (G.buildings && G.buildings.laborHours) h += G.buildings.laborHours();
@@ -504,7 +504,7 @@
       if (--h.sick.days <= 0) { h.sick = null; }
     } else {
       for (const dis of sp.diseases || []) {
-        if (dis.summer && !(d.month >= 4 && d.month <= 8)) continue;
+        if (dis.summer && !(G.cm(d) >= 4 && G.cm(d) <= 8)) continue;
         let p = dis.p * (1.6 - h.health) * (care < 0.7 ? 1.5 : 1) * (crowd ? 2 : 1) * (dis.feedRisk && fr.fed < 0.8 ? 2 : 1) * (1 + Math.log10(Math.max(1, h.count)) / 3);
         if (Math.random() < p) { startDisease(h, dis); break; }
       }
@@ -562,19 +562,19 @@
       }
       case 'kura': {
         h.age++;
-        const light = def.light ? 1 : ((d.month <= 1 || d.month >= 10) ? 0.75 : 1);
+        const light = def.light ? 1 : ((G.cm(d) <= 1 || G.cm(d) >= 10) ? 0.75 : 1);
         addOut('jaja', Math.round(sp.products.jaja * layRate(h) * light * h.count * n * pm), h);
         if (A.henWeeks(h) > 80 && !h.oldWarned) { h.oldWarned = true; G.notify('🐔 Kury mają już ' + A.henWeeks(h) + ' tygodni — nioska spada. Sprzedaj stare i kup młode nioski.', 'info', { key: 'oldhens' }); }
         break;
       }
       case 'koza': {
-        const lact = (d.month === 11 || d.month === 0) ? 0.2 : (d.month >= 2 && d.month <= 6 ? 1.15 : 0.9);
+        const lact = (G.cm(d) === 11 || G.cm(d) === 0) ? 0.2 : (G.cm(d) >= 2 && G.cm(d) <= 6 ? 1.15 : 0.9);
         addOut('mleko_kozie', Math.round(sp.products.mleko_kozie * h.count * n * pm * lact), h);
         break;
       }
       case 'pszczoly': {
         if (d.dom === C.DAYS_PER_MONTH && d.month >= 4 && d.month <= 6) {
-          const share = [0.35, 0.35, 0.3][d.month - 4];
+          const share = [0.35, 0.35, 0.3][G.cm(d) - 4];
           const kg = addOut('miod', Math.round(sp.honey * share * h.count * pm), h);
           if (kg > 0) G.notify('🍯 Miodobranie: ' + G.fmtNum(kg, 0) + ' kg miodu', 'good', { key: 'honey' });
         }
@@ -637,7 +637,7 @@
       }
     }
     // konie — jazdy dla gości (rozliczenie miesięczne)
-    if (h.species === 'kon' && d.month >= 4 && d.month <= 8) {
+    if (h.species === 'kon' && G.cm(d) >= 4 && G.cm(d) <= 8) {
       const agro = G.buildings && G.buildings.list && G.buildings.list().some(x => x.type === 'house' && x.progress >= 1 && bdef(x).agro);
       S.pendingIncome += sp.rides * h.count * n * pm * (agro ? 1.6 : 1);
     }
@@ -665,7 +665,7 @@
     if (!S) return;
     const care = updateLabor();
     autoBuy();
-    const pf = pastureFrac(d.month);
+    const pf = pastureFrac(G.cm(d));
     S.lastPasture = Math.round(pf * 100) / 100;
     let hungry = [];
     for (const h of ordered()) {
@@ -796,7 +796,7 @@
   // → [{ x, y (kafel, ułamkowy), species, model, dir (0..7: oktant kąta w układzie kafli, 0 = +x), angle (rad), anim ('walk'|'eat'|'idle'|'fly'), color?, scale?, herd }]
   A.sprites = function () {
     if (!G.S || !G.S.animals) return [];
-    const out = [], hf = G.hourFrac || 0, t = G.S.tick + hf, d = G.date(), hour = d.hour + hf, m = d.month;
+    const out = [], hf = G.hourFrac || 0, t = G.S.tick + hf, d = G.date(), hour = d.hour + hf, m = G.cm(d);
     const day = hour >= 6 && hour < 20, warm = m >= 3 && m <= 9, winter = m === 11 || m <= 1;
     const graze = st().opts.grazing && pastureSeason(m) > 0;
     const past = graze ? pastureTiles() : [];
@@ -852,7 +852,7 @@
   G.on('newGame', function () {
     G.S.animals = fresh();
     G.S.animals.startPending = true;            // kury dziadka — gdy moduł budynków postawi kurnik (hook 'load')
-    G.inv.add('pasza_tresciwa', 0.25);          // worki mieszanki dla kur na start
+    G.inv.add('pasza_tresciwa', 1);             // worki mieszanki dla kur na start (+ domyślnie auto-zakup paszy)
     G.inv.add('sloma', 3);                      // trochę słomy na ściółkę w kurniku
   });
   G.on('load', function () {

@@ -300,7 +300,7 @@
     chimT += dt;
     if (chimT < 0.35 || !G.fx) return;
     chimT = 0;
-    const d = G.date(), h = hourNow(), cold = d.month >= 9 || d.month <= 3;
+    const d = G.date(), h = hourNow(), cold = G.cm(d) >= 9 || G.cm(d) <= 3;
     if (!(cold || h < 8 || h > 18)) return;
     for (const it of items) {
       if (it.t !== 'b' || it.opts.progress != null) continue;

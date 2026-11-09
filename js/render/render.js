@@ -45,7 +45,7 @@
   // wschód/zachód zależne od miesiąca (lato ~4:30–20:30, zima ~7:30–15:40)
   R.light = function () {
     const d = G.date(), h = d.hour + (G.hourFrac || 0);
-    const f = Math.cos(((d.month + (d.dom != null ? (d.dom - 1) / C.DAYS_PER_MONTH : 0.5)) - 5.7) / 12 * Math.PI * 2);
+    const f = Math.cos(((G.cm(d) + (d.dom != null ? (d.dom - 1) / C.DAYS_PER_MONTH : 0.5)) - 5.7) / 12 * Math.PI * 2);
     const rise = 6 - 1.6 * f, set = 18 + 2.4 * f;
     const sm = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
     const day = sm(rise - 0.8, rise + 0.9, h) * (1 - sm(set - 0.9, set + 0.8, h));
