@@ -504,13 +504,16 @@
     const mult = peak ? 1.1 : 1;
     const price = Math.max(350, Math.round(rate * qty * mult / 10) * 10);
     const r = G.rng((pid + 1) * 7919 + op.length * 104729 + d.dayIndex * 31 + (G.S.seed | 0));
-    const days = peak ? 2 + ((r() * 4) | 0) : 1 + ((r() * 2) | 0);
+    // Kalendarz gry jest skrócony (miesiąc = 6 dni), więc czas oczekiwania liczymy w godzinach gry:
+    // w szczycie 12–36 h, poza szczytem 3–12 h (inaczej usługa przyjeżdżałaby „po miesiącu”).
+    const waitH = peak ? 12 + ((r() * 25) | 0) : 3 + ((r() * 10) | 0);
+    const days = Math.round(waitH / TPD * 10) / 10;
     const c = CONTRACTORS[(pid + op.length) % CONTRACTORS.length];
     const fl = fleetFor(op, crop, input, params);
     const hoursEst = Math.round(p.area / G.machines.rate(fl.power, fl.impl, 1.12) * 10) / 10;
-    return { ok: true, price, days, rate, unit, qty, peak, name: c.name, color: c.color, area: p.area, hoursEst, trailers: fl.sets, startText: G.dateText(startTickFor(days)) };
+    return { ok: true, price, days, rate, unit, qty, peak, name: c.name, color: c.color, area: p.area, hoursEst, trailers: fl.sets, waitH, startText: G.dateText(startTickFor(waitH)) + ', ' + String(G.date(startTickFor(waitH)).hour).padStart(2, '0') + ':00' };
   };
-  function startTickFor(days) { const d = G.date(); return (d.dayIndex + days) * TPD + 7; }
+  function startTickFor(waitH) { const t = G.S.tick + waitH, h = t % TPD; return h < 6 ? t - h + 6 : h > 20 ? t - h + TPD + 6 : t; } // start w godzinach 6–20
   J.hireContractor = function (pid, op, params) {
     const q = J.contractorQuote(pid, op, params);
     if (!q.ok) return { ok: false, reason: q.reason };
@@ -519,7 +522,7 @@
     if (!G.finance.spend(q.price, 'usługi', 'Usługa: ' + J.opName(op) + ' — ' + G.S.parcels[pid].name + ' (' + q.name + ')')) return { ok: false, reason: 'Brak środków' };
     const job = baseJob(op, pid, params);
     const crop = cropOf(op, params, pid), fl = fleetFor(op, crop, M().inputFor(op, params), params);
-    job.contractor = { name: q.name, color: q.color, price: q.price, startTick: startTickFor(q.days), power: fl.power, impl: fl.impl };
+    job.contractor = { name: q.name, color: q.color, price: q.price, startTick: startTickFor(q.waitH), power: fl.power, impl: fl.impl };
     for (let k = 0; k < fl.sets; k++) job.sets.push({ tractor: null, trailer: null, trailer2: null, helper: null, tid: HIRED_SET.tid, rid: HIRED_SET.rid, rid2: null, hired: true });
     job.reason = 'Usługa zaplanowana na ' + G.dateText(job.contractor.startTick);
     G.S.jobs.list.push(job);

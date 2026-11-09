@@ -136,6 +136,7 @@
   G.newGame = function (seed) {
     seed = seed || ((Math.random() * 1e9) | 0);
     G.S = G.defaultState(seed);
+    G.S.tick = 7;                     // start o 7:00 rano — pierwsze wrażenie w świetle dnia
     G.mapgen.generate(G.S, seed);     // mapa, działki, podwórze gospodarstwa
     G.emit('newGame');                // moduły: start (budynki dziadka, stary ciągnik, kury, ozimina...)
     G.emit('load');                   // wspólna walidacja/odbudowa pamięci podręcznej
