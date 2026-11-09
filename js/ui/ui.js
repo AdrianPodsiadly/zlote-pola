@@ -7,12 +7,13 @@
 
   // ---------- pomocnicze: DOM ----------
   // h('div.card.sel#id', {onclick, title, html}, ...children)
-  U.h = function (tag, attrs) {
+  U.h = function (tag, ...rest) {
     const parts = tag.split(/(?=[.#])/);
     const el = document.createElement(parts[0] || 'div');
     for (const p of parts.slice(1)) { if (p[0] === '.') el.classList.add(p.slice(1)); else if (p[0] === '#') el.id = p.slice(1); }
-    let i = 2;
-    if (attrs && (typeof attrs !== 'object' || attrs instanceof Node || Array.isArray(attrs))) { i = 1; attrs = null; }
+    let attrs = rest[0], i = 1;
+    // pierwszy argument to atrybuty tylko wtedy, gdy jest zwykłym obiektem (nie węzłem, tablicą ani tekstem)
+    if (attrs == null || typeof attrs !== 'object' || attrs instanceof Node || Array.isArray(attrs)) { i = attrs == null ? 1 : 0; attrs = null; }
     if (attrs) for (const k in attrs) {
       const v = attrs[k];
       if (v == null || v === false) continue;
@@ -24,7 +25,7 @@
       else if (k in el && k !== 'list' && k !== 'type') { try { el[k] = v; } catch (e) { el.setAttribute(k, v); } }
       else el.setAttribute(k, v);
     }
-    for (; i < arguments.length; i++) append(el, arguments[i]);
+    for (; i < rest.length; i++) append(el, rest[i]);
     return el;
   };
   function append(el, c) {
@@ -109,8 +110,8 @@
 
   // ---------- dolna nawigacja ----------
   const NAV = [
-    { id: 'map', icon: '🗺️', label: 'Mapa' }, { id: 'fields', icon: '🌾', label: 'Pola' }, { id: 'machines', icon: '🚜', label: 'Maszyny' },
-    { id: 'animals', icon: '🐄', label: 'Zwierzęta' }, { id: 'build', icon: '🏗️', label: 'Budowa' }, { id: 'market', icon: '💰', label: 'Rynek' },
+    { id: 'fields', icon: '🌾', label: 'Pola' }, { id: 'machines', icon: '🚜', label: 'Maszyny' },
+    { id: 'animals', icon: '🐄', label: 'Hodowla' }, { id: 'build', icon: '🏗️', label: 'Budowa' }, { id: 'market', icon: '💰', label: 'Rynek' },
     { id: 'finance', icon: '📊', label: 'Finanse' }, { id: 'more', icon: '⋯', label: 'Więcej' }
   ];
   U.MORE = [
@@ -121,12 +122,13 @@
   ];
   function buildNav() {
     const nav = document.getElementById('nav');
-    for (const n of NAV) nav.appendChild(h('button', { 'data-nav': n.id, onclick: () => { U.sfx('ui_tap'); if (n.id === 'map') U.close(); else U.open(n.id); } }, h('span.ico', n.icon), h('span', n.label), h('span.badge.hidden')));
+    for (const n of NAV) nav.appendChild(h('button', { 'data-nav': n.id, onclick: () => { U.sfx('ui_tap'); const cur = stack.length ? stack[0].name : null; if (n.id === 'map' || (cur === n.id && stack.length === 1 && sheet.classList.contains('open'))) U.close(); else U.open(n.id); } }, h('span.ico', n.icon), h('span', n.label), h('span.badge.hidden')));
     updateNav();
   }
   function updateNav() {
-    const cur = stack.length ? stack[stack.length - 1].name : 'map';
-    const top = NAV.some(n => n.id === cur) ? cur : (stack.length ? 'more' : 'map');
+    // podświetlona sekcja = dno stosu (np. Pola → działka → kreator nadal pod „Pola”)
+    const base = stack.length ? stack[0].name : 'map';
+    const top = NAV.some(n => n.id === base) ? base : U.MORE.some(m => m.id === base) ? 'more' : 'map';
     document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.nav === top));
   }
   U.navBadge = function (id, n) { const b = document.querySelector('#nav button[data-nav="' + id + '"] .badge'); if (!b) return; b.textContent = n; b.classList.toggle('hidden', !(n > 0)); };
@@ -174,12 +176,13 @@
     const top = stack[stack.length - 1];
     if (!top) return;
     const st = keepScroll ? sheetBody.scrollTop : 0;
-    btnBack.style.visibility = stack.length > 1 ? 'visible' : 'hidden';
+    btnBack.style.display = stack.length > 1 ? '' : 'none';
     const t = typeof top.def.title === 'function' ? top.def.title(top.arg, top) : top.def.title;
     const s = typeof top.def.sub === 'function' ? top.def.sub(top.arg, top) : top.def.sub;
     sheetTitle.textContent = t || '';
     sheetSub.textContent = s || ''; sheetSub.classList.toggle('hidden', !s);
     U.clear(sheetBody); U.clear(sheetFoot);
+    sheetBody.classList.toggle('nofx', !!keepScroll);
     try { top.def.render(sheetBody, top.arg, top); } catch (e) { console.error('[panel ' + top.name + ']', e); sheetBody.appendChild(h('div.hint.bad', 'Błąd ekranu: ' + e.message)); }
     if (top.def.foot) { try { append(sheetFoot, top.def.foot(top.arg, top)); } catch (e) { console.error(e); } }
     if (keepScroll) sheetBody.scrollTop = st;
@@ -288,6 +291,18 @@
     if (sel.jobUid != null) return vs.find(x => x.jobUid === sel.jobUid && x.unit === sel.unit && (sel.k == null || x.k === sel.k)) || null;
     return null;
   };
+  U.sameVehicle = (a, b) => !!a && !!b && (a.uid != null ? a.uid === b.uid : (a.jobUid === b.jobUid && a.unit === b.unit && (a.k == null || a.k === b.k)));
+  // tryb wskazywania celu dla zaznaczonego pojazdu (przycisk „📍 Wskaż cel”)
+  U.setTargetMode = function (on) {
+    const bar = document.getElementById('placebar');
+    if (on) {
+      U.mode = 'target'; cv.classList.add('placing');
+      U.clear(bar);
+      bar.appendChild(h('div.row.between', h('div', h('b', '📍 Wskaż cel'), h('div.small.muted', 'Dotknij pola, budynku albo maszyny — pokażę dostępne polecenia')), h('button.btn.icon.ghost', { onclick: () => U.setTargetMode(false) }, '✕')));
+      bar.classList.add('show');
+      if (U.isMobile()) { const keep = U.sel.vehicle, gv = G.view.selVehicle; U.close(); U.sel.vehicle = keep; G.view.selVehicle = gv; G.view.selVehicleUid = keep ? keep.uid : null; }
+    } else if (U.mode === 'target') { U.mode = 'normal'; cv.classList.remove('placing'); bar.classList.remove('show'); }
+  };
   U.selectVehicle = function (v, open) {
     U.sel.vehicle = v ? { uid: v.uid, jobUid: v.jobUid, unit: v.unit, k: v.k, label: v.label } : null;
     G.view.selVehicle = U.sel.vehicle ? Object.assign({}, U.sel.vehicle, { x: v.x, y: v.y }) : null;
@@ -320,11 +335,14 @@
     // zaznaczony pojazd + dotknięcie celu → domyślna akcja (gdy moduł sterowania istnieje)
     const selV = U.sel.vehicle && U.findVehicle(U.sel.vehicle);
     const vNear = U.vehicleAt(f.tx, f.ty, 0.8);
-    if (vNear && !(selV && vNear === selV)) { U.sfx('ui_select'); U.selectVehicle(vNear); return; }
-    if (selV && selV.uid != null && G.machines && G.machines.actions && i >= 0 && !vNear) {
-      if (button === 2) { U.vehicleMenu(selV, i, sx, sy); return; }
-      if (U.defaultAction(selV, i)) return;
+    // tryb „wskaż cel” (z karty pojazdu) albo prawy klik → menu poleceń dla zaznaczonego pojazdu
+    if (selV && selV.uid != null && i >= 0 && (U.mode === 'target' || (button === 2 && !(vNear && vNear.uid !== selV.uid)))) {
+      U.setTargetMode(false);
+      U.vehicleMenu(selV, i, sx, sy); return;
     }
+    if (U.mode === 'target') U.setTargetMode(false);
+    if (vNear && !(selV && U.sameVehicle(vNear, selV))) { U.sfx('ui_select'); U.selectVehicle(vNear); return; }
+    if (vNear && selV) { U.open('vehicle', U.sel.vehicle, { push: true }); return; }
     if (i < 0) { U.clearSelection(); if (U.isMobile()) U.close(); return; }
     const b = G.buildings && G.buildings.at ? G.buildings.at(i) : null;
     if (b) { U.sfx('ui_select'); U.selectBuilding(b); return; }
@@ -340,15 +358,21 @@
   let pinch0 = null;
   function startLongPress(e, sx, sy) {
     cancelLongPress();
+    if (e.pointerType === 'mouse' || U.mode === 'place' || U.mode === 'expand') return;
     const selV = U.sel.vehicle && U.findVehicle(U.sel.vehicle);
-    if (!selV || !(G.machines && G.machines.actions) || e.pointerType === 'mouse') return;
-    gesture.lpTimer = setTimeout(() => {
-      if (!gesture || gesture.moved) return;
+    const f0 = ISO.screenToTileF(sx, sy);
+    const under = U.vehicleAt(f0.tx, f0.ty, 0.8);
+    // bez zaznaczonego pojazdu długie przytrzymanie na pojeździe = wybór; z zaznaczonym = menu poleceń
+    if (!selV && !under) return;
+    const g = gesture;
+    g.lpTimer = setTimeout(() => {
+      if (gesture !== g || g.moved) return;
       const i = ISO.pick(sx, sy);
-      if (i < 0) return;
-      gesture.consumed = true;
+      g.consumed = true;
       U.haptic(20);
       lpRing.classList.remove('show');
+      if (!selV || (under && under.uid !== selV.uid && !(G.machines && G.machines.actions))) { if (under) { U.sfx('ui_select'); U.selectVehicle(under); } return; }
+      if (i < 0) return;
       U.vehicleMenu(selV, i, sx, sy);
     }, 450);
     lpRing.style.left = e.clientX + 'px'; lpRing.style.top = e.clientY + 'px';
@@ -446,7 +470,7 @@
     if (t && /INPUT|TEXTAREA|SELECT/.test(t.tagName)) return;
     const k = e.key.toLowerCase();
     if (down) {
-      if (k === 'escape') { if (modal.classList.contains('show')) U.closeModal(); else if (U.mode === 'place' || U.mode === 'expand') U.cancelPlace(); else if (U.mode === 'drive') { if (G.ui.driveExit) G.ui.driveExit(); } else U.hideCtx() || U.close(); return; }
+      if (k === 'escape') { if (modal.classList.contains('show')) U.closeModal(); else if (U.mode === 'place' || U.mode === 'expand') U.cancelPlace(); else if (U.mode === 'target') U.setTargetMode(false); else if (U.mode === 'drive') { if (G.ui.driveExit) G.ui.driveExit(); } else U.hideCtx() || U.close(); return; }
       if (U.mode === 'drive') { keys.add(k); e.preventDefault(); return; }
       if (k === ' ') { e.preventDefault(); U.togglePause(); return; }
       if (k === '+' || k === '=') { ISO.zoomAt(1.2, G.cam.vw / 2, G.cam.vh / 2); return; }

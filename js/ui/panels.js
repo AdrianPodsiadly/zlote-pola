@@ -866,7 +866,7 @@
       const canDrive = !!(G.drive && G.drive.take) && v.uid != null && v.kind !== 'contractor' && v.kind !== 'transport';
       row.appendChild(h('button.btn.sm.primary' + (canDrive ? '' : '.disabled'), { disabled: !canDrive, title: canDrive ? '' : 'wkrótce', onclick: () => U.driveStart(v.uid) }, '🕹️ Prowadź', !canDrive ? h('span.sub', 'wkrótce') : null));
       if (G.machines && G.machines.actions && v.uid != null) {
-        row.appendChild(h('button.btn.sm', { onclick: () => { U.toast('Dotknij celu na mapie (długie przytrzymanie = menu akcji)', 'info'); if (U.isMobile()) U.close(); } }, '📍 Wskaż cel'));
+        row.appendChild(h('button.btn.sm', { onclick: () => U.setTargetMode(true) }, '📍 Wskaż cel'));
         const acts = (() => { try { return G.machines.actions(v.uid, null) || []; } catch (e) { return []; } })().filter(a => ['garage', 'stop', 'refuel', 'unhitch', 'raise', 'lower'].includes(a.id));
         for (const a of acts) row.appendChild(h('button.btn.sm' + (a.enabled === false ? '.disabled' : ''), { disabled: a.enabled === false, title: a.reason || '', onclick: () => U.runAction(v, a.id, null) }, (a.icon || '') + ' ' + a.label));
       }
@@ -894,9 +894,13 @@
         sc.appendChild(toggle('Dźwięk włączony', 'muzyka, maszyny, zwierzęta, pogoda', on, () => { try { G.sound.unlock && G.sound.unlock(); G.sound.toggle(); } catch (e) { /* brak */ } U.updateSound(); }));
         const chans = Array.isArray(G.sound.CHANNELS) ? G.sound.CHANNELS : Object.keys(G.sound.CHANNELS);
         for (const ch of chans) {
-          const id = typeof ch === 'string' ? ch : ch.id, label = typeof ch === 'string' ? ({ master: 'Głośność główna', music: 'Muzyka', sfx: 'Efekty', ambient: 'Otoczenie', machines: 'Maszyny', animals: 'Zwierzęta', ui: 'Interfejs', weather: 'Pogoda' }[ch] || ch) : (ch.label || ch.name || ch.id);
-          let vol = 0.8; try { vol = G.sound.vol ? G.sound.vol(id) : 0.8; } catch (e) { /* brak */ }
-          sc.appendChild(h('div.field.nolive', h('label', label), h('input', { type: 'range', min: 0, max: 1, step: 0.05, value: vol, oninput: e => { try { G.sound.setVol(id, +e.target.value); } catch (err) { /* brak */ } } })));
+          const NAMES = { master: 'Głośność główna', music: 'Muzyka', sfx: 'Efekty', ambient: 'Otoczenie', machines: 'Maszyny', animals: 'Zwierzęta', ui: 'Interfejs', weather: 'Pogoda' };
+          const id = Array.isArray(ch) ? ch[0] : typeof ch === 'string' ? ch : ch.id;
+          const label = Array.isArray(ch) ? ch[1] : typeof ch === 'string' ? (NAMES[ch] || ch) : (ch.label || ch.name || ch.id);
+          let vol = 0.8;
+          try { const V = G.sound.vol; vol = typeof V === 'function' ? V(id) : (V && typeof V[id] === 'number' ? V[id] : 0.8); } catch (e) { /* brak */ }
+          const pct = h('span.small.muted.num', Math.round(vol * 100) + '%');
+          sc.appendChild(h('div.field.nolive', h('div.row.between', h('label', (id === 'master' ? '🔊 ' : '') + label), pct), h('input', { type: 'range', min: 0, max: 1, step: 0.05, value: vol, oninput: e => { pct.textContent = Math.round(+e.target.value * 100) + '%'; try { G.sound.setVol(id, +e.target.value); } catch (err) { /* brak */ } } })));
         }
       } else sc.appendChild(h('div.small.muted', '🔇 Moduł dźwięku pojawi się wkrótce.'));
       body.appendChild(sc);

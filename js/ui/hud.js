@@ -4,6 +4,7 @@
   let elDate, elTime, elDayIco, elWeather, elMoney, elMoneyV, elDelta, elSpeed, elBell, elBellBadge, elSound, mmCanvas, mmCtx, pausedBanner;
   let shownMoney = null, moneyFlashT = 0;
 
+  const MSHORT = ['sty', 'lut', 'mar', 'kwi', 'maj', 'cze', 'lip', 'sie', 'wrz', 'paź', 'lis', 'gru'];
   function dayIcon(hour) { return hour < 5 || hour >= 22 ? '🌙' : hour < 8 ? '🌅' : hour < 18 ? '☀️' : '🌇'; }
   function dayName(hour) { return hour < 5 || hour >= 22 ? 'noc' : hour < 8 ? 'świt' : hour < 12 ? 'rano' : hour < 18 ? 'dzień' : 'wieczór'; }
 
@@ -61,7 +62,8 @@
   U.hudTick = function (now) {
     if (!G.S || !elDate) return;
     const d = G.date();
-    elDate.textContent = d.dom + ' ' + G.MONTHS_GEN[d.month] + ' ' + d.year;
+    const narrow = window.innerWidth < 520;
+    elDate.textContent = narrow ? d.dom + ' ' + MSHORT[d.month] : d.dom + ' ' + G.MONTHS_GEN[d.month] + ' ' + d.year;
     const mins = Math.floor((G.hourFrac || 0) * 60);
     elTime.textContent = String(d.hour).padStart(2, '0') + ':' + String(mins - mins % 10).padStart(2, '0');
     elDayIco.textContent = dayIcon(d.hour);
@@ -162,7 +164,8 @@
     const t = { el, key, until: performance.now() + (n.kind === 'bad' ? 6500 : 4500), id: ++toastSeq };
     el.addEventListener('click', () => { if (n.opts && n.opts.parcel != null) { U.centerParcel(n.opts.parcel); U.selectParcel(n.opts.parcel); } else if (n.opts && n.opts.tile != null) U.centerTile(n.opts.tile); removeToast(t); });
     toasts.push(t); box.appendChild(el);
-    while (toasts.length > 2) removeToast(toasts[0], true);
+    const sheetOpen = U.isMobile() && document.querySelector('#sheet.open');
+    while (toasts.length > (sheetOpen ? 1 : 2)) removeToast(toasts[0], true);
   }
   function removeToast(t, now) {
     const k = toasts.indexOf(t); if (k >= 0) toasts.splice(k, 1);
@@ -238,7 +241,7 @@
   let drv = null; // { uid, joy: {dx, dy, active, id}, el }
   function driveBuild() {
     const d = document.getElementById('drive'); U.clear(d);
-    const dash = h('div.dash.glass', h('div', h('div.v.num#drv-speed', '0'), h('div.l', 'km/h')), h('div', h('div.v#drv-gear', 'N'), h('div.l', 'bieg')), h('div', h('div.v.num#drv-fuel', '—'), h('div.l', 'paliwo')), h('div', h('div.v.num#drv-fill', '—'), h('div.l', 'ładunek')));
+    const dash = h('div.dash.glass', h('div', h('div.v.num#drv-speed', '0'), h('div.l', 'km/h')), h('div', h('div.v#drv-gear', 'N'), h('div.l', 'bieg')), h('div', h('div.v.num#drv-fuel', '—'), h('div.l', 'paliwo')), h('div#drv-fillbox', h('div.v.num#drv-fill', '—'), h('div.l', 'ładunek')));
     d.appendChild(dash);
     d.appendChild(h('button.btn.exit.glass', { onclick: U.driveExit }, '🚪 Wysiądź'));
     const joy = h('div#joy', h('div.knob'));
@@ -269,6 +272,7 @@
     driveBuild();
     U.close(); U.hideCtx();
     U.mode = 'drive';
+    document.getElementById('app').classList.add('driving');
     document.getElementById('drive').classList.add('show');
     document.getElementById('nav').classList.add('hidden'); document.getElementById('hud').classList.add('hidden');
     document.getElementById('fab-advisor').classList.add('hidden'); document.getElementById('minimap').classList.add('hidden');
@@ -280,6 +284,7 @@
   U.driveExit = function () {
     try { if (G.drive && G.drive.release) G.drive.release(); } catch (e) { /* brak */ }
     drv = null; U.mode = 'normal'; U.cam.follow = null;
+    document.getElementById('app').classList.remove('driving');
     document.getElementById('drive').classList.remove('show');
     document.getElementById('nav').classList.remove('hidden'); document.getElementById('hud').classList.remove('hidden');
     document.getElementById('fab-advisor').classList.remove('hidden'); document.getElementById('minimap').classList.remove('hidden');
@@ -301,8 +306,10 @@
     const q = id => document.getElementById(id);
     if (q('drv-speed')) q('drv-speed').textContent = Math.round(Math.abs(s.speed || 0));
     if (q('drv-gear')) q('drv-gear').textContent = s.gear || (s.speed < -0.1 ? 'R' : s.speed > 0.1 ? 'D' : 'N');
-    if (q('drv-fuel')) q('drv-fuel').textContent = s.fuel != null ? Math.round(s.fuel) + (s.fuelCap ? '/' + Math.round(s.fuelCap) : '') + ' l' : '—';
+    if (q('drv-fuel')) q('drv-fuel').innerHTML = s.fuel != null ? Math.round(s.fuel) + '<small> l</small>' : '—';
+    if (q('drv-fuel')) q('drv-fuel').classList.toggle('bad', !!(s.fuelCap && s.fuel / s.fuelCap < 0.15));
     if (q('drv-fill')) q('drv-fill').textContent = s.fill != null ? Math.round(s.fill * 100) + '%' : '—';
+    if (q('drv-fillbox')) q('drv-fillbox').classList.toggle('hidden', !(s.fill > 0 || s.capacity > 0 || s.cap > 0));
     const impl = q('drv-impl'); if (impl) { impl.classList.toggle('on', !!s.lowered); impl.disabled = !s.implement; impl.firstChild.textContent = s.lowered ? '⬆️' : '⬇️'; impl.querySelector('.lbl').textContent = s.implement ? (s.lowered ? 'podnieś' : 'opuść') : 'brak narz.'; }
     const hb = q('drv-hitch'); if (hb) { const can = !!s.canHitch, has = !!s.implement; hb.disabled = !can && !has; hb.querySelector('.lbl').textContent = can ? 'podczep' : has ? 'odczep' : 'podczep'; hb.classList.toggle('on', can); }
     const ub = q('drv-unload'); if (ub) ub.disabled = !(s.fill > 0);
