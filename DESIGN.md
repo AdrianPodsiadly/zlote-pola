@@ -88,3 +88,20 @@ Teksty i komentarze **po polsku**. Grane głównie na **telefonie** (iPhone, pod
 ### Interfejs — `ui/*.js`, `css/style.css`, `index.html`
 - Mobile-first, UX najwyższej jakości: HUD (data, pora dnia, pogoda, pieniądze, prędkość), dolny pasek głównych sekcji, panel działki po dotknięciu (stan pola, zalecenia, przyciski zabiegów), kreator zlecenia (zabieg → maszyny → pracownik → szacunek kosztu/czasu), rynek (wykresy cen), finanse (księga, wykresy), maszyny (sklep/wynajem/serwis), ludzie, zwierzęta, budynki (tryb stawiania z podglądem), ziemia (oferty), doradca („co teraz robić”), samouczek, ekran tytułowy, zapis/eksport, ustawienia (długość doby `G.setDayLength`, dźwięk).
 - Sterowanie: przesuwanie jednym palcem, zoom dwoma, dotknięcie = wybór (`G.iso.pick`), mysz + kółko, klawiatura.
+
+## Uzupełnienia kontraktu (po pierwszej rundzie — obowiązujące)
+### Zbiór i transport (zrealizowane w sim/jobs.js)
+- Kombajn napełnia zbiornik (`tankL`/`cap` t) i rozładowuje WYŁĄCZNIE rurą (ślimakiem, lewa strona) na przyczepę ciągniętą przez ciągnik. Nigdy nie zjeżdża z pola z ziarnem. Zlecenie zbioru wymaga ≥1 zestawu ciągnik+przyczepa+kierowca (`helpers`, `sets`), albo `transport: n` (wynajęty) albo kontraktora.
+- `vehicles()` zwraca dla kombajnu: `unloading`, `auger: 'in'|'out'`, `fill`; dla przyczepy: `fill`, `receiving`, `kind: 'own'|'contractor'|'transport'|'parked'`; `inGarage: true` → nie rysować; `broken`, `waiting`, `label`.
+### Przyczepy (DO ZROBIENIA — agent maszyn)
+- Pole `axle`: `'dwuosiowa'` (przednia oś skrętna na obrotnicy, 4–18 t) | `'jednoosiowa'` (3–8 t) | `'tandem'` (8–20 t) | `'tridem'` (20–30 t). Ładowność w tonach (`cap`), opcjonalnie m³ (zboże 0,76 t/m³). Ciągnik może ciągnąć 2 przyczepy (druga za pierwszą; `parts: [ciągnik, p1, p2]`, każda z `axle`, `cap`, `fill`).
+- Kombajny: `tankL` (4 400 / 8 000–9 000 / 11 000–12 500 / 14 500 l), `unloadLps` (75 / 105 / 125).
+- Rozładunek przyczepy: `G.buildings.unloadPoint(productId)` → `{x, y, buildingUid, free}` (istnieje).
+### Bezpośrednia kontrola pojazdów i ręczna jazda (DO ZROBIENIA — agent maszyn + UI + grafika)
+- Trwałe pozycje maszyn w `G.S.machines[*]`: `x, y, angle, attachedTo, hitch[], lowered, driver, order, parked`. Narzędzia odczepione stoją tam, gdzie je zostawiono (`vehicles()` → `kind: 'implement'`).
+- `G.machines.at(x, y, r)`, `G.machines.actions(uid, target) → [{id, label, icon, enabled, reason}]` (goto, work, hitch, unhitch, lower, raise, follow_combine, unload, refuel, garage, assign_driver, stop, drive), `G.machines.command(uid, actionId, target, params) → {ok, reason}`.
+- `G.drive`: `take(uid)`, `release()`, `active()`, `input({throttle, steer, brake})` co klatkę (czas rzeczywisty, niezależny od prędkości gry), `toggleImplement()`, `hitchNearest()`, `unhitch()`, `unloadAuger()`, `needParams()/setParams(p)`, `state() → {speed, gear, fuel, implement, lowered, fill, tile, parcelId, canHitch, hints}`. Opuszczone narzędzie obrabia kafle (`G.fields.workTile`) pod szerokością roboczą.
+- UI: tap = wybór pojazdu (`G.view.selVehicle`), prawy klik / długie przytrzymanie = menu akcji, przycisk „Prowadź” → HUD jazdy (joystick / WASD). Grafika: pierścień zaznaczenia, odczepione narzędzia, `lowered`, `manual`.
+### Silosy (zrealizowane): `silo_hopper` (variant 'hopper'), `silo_flat` ('flat'), `feed_bin` ('feed'), `granary`, `barn` — pojemności w t; grafika rozróżnia po `G.BUILDINGS[type].variant`.
+### Balans upraw (DO ZROBIENIA — agent upraw): dobra agrotechnika ma wygrywać z zaniedbaniem w ≥85% symulacji po 2 latach; klasy jakości ziarna (konsumpcyjna/paszowa, `G.market.price(id, quality?)`).
+### Dźwięk (DO ZROBIENIA — agent dźwięku): `js/ui/sound.js` → `G.sound` (unlock, toggle, setVol, CHANNELS, play, duck, update); UI dodaje przycisk i suwaki.
