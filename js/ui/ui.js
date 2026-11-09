@@ -10,7 +10,8 @@
   U.h = function (tag, ...rest) {
     const parts = tag.split(/(?=[.#])/);
     const el = document.createElement(parts[0] || 'div');
-    for (const p of parts.slice(1)) { if (p[0] === '.') el.classList.add(p.slice(1)); else if (p[0] === '#') el.id = p.slice(1); }
+    // klasy mogą zawierać spacje (np. 'span.num bad') — dzielimy je, zamiast wywracać cały ekran
+    for (const p of parts.slice(1)) { if (p[0] === '.') { for (const c of p.slice(1).split(/\s+/)) if (c) el.classList.add(c); } else if (p[0] === '#') el.id = p.slice(1).trim(); }
     let attrs = rest[0], i = 1;
     // pierwszy argument to atrybuty tylko wtedy, gdy jest zwykłym obiektem (nie węzłem, tablicą ani tekstem)
     if (attrs == null || typeof attrs !== 'object' || attrs instanceof Node || Array.isArray(attrs)) { i = attrs == null ? 1 : 0; attrs = null; }

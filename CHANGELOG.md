@@ -1,5 +1,9 @@
 # Złote Pola — historia zmian
 
+## 0.1.4
+
+- Naprawiony „Błąd ekranu” w Rynku → Sklep (nazwy klas CSS ze spacją wywracały cały ekran). Przegląd wszystkich paneli i zakładek — bez błędów.
+
 ## 0.1.3
 - Naprawione rozkazy z menu pojazdu („Jedź tutaj”, „Obrób działkę”): interfejs podawał cel jako numer kafla, a symulacja oczekiwała obiektu — każdy cel wychodził „Poza mapą”.
 
