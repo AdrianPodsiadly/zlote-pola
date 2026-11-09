@@ -1,7 +1,8 @@
 // Złote Pola — park maszynowy: zakup, wynajem, zużycie, serwis → G.machines (agent: maszyny, ludzie, prace)
 //
 // Stan: G.S.machines = [{ uid, id, rented, until (tick końca wynajmu), wear 0..1, hours (motogodziny), busy: jobUid|null,
-//                         year (rocznik), broken (awaria), repairUntil (tick końca naprawy | 0), stored (pod dachem) }]
+//                         year (rocznik), broken (awaria), repairUntil (tick końca naprawy | 0), stored (pod dachem),
+//                         fill: { produkt: t } (ładunek przyczepy — pełna przyczepa na podwórzu to magazyn tymczasowy) }]
 //       G.S.machineMarket = { offers: [{ oid, id, year, wear, hours, price }], next: tick odświeżenia }
 // Paliwo: produkt 'ON' (G.PRODUCTS — data/machines.js). Maszyny tankują z magazynu (G.inv.take('ON')),
 //         a gdy brak — tankują na stacji drożej (G.finance.spend(..., 'paliwo')).
@@ -55,6 +56,7 @@
     if (!m) return { ok: false, reason: 'Nie ma takiej maszyny' };
     if (m.rented) return { ok: false, reason: 'Maszyna jest wynajęta — można ją tylko oddać' };
     if (m.busy) return { ok: false, reason: 'Maszyna pracuje w zleceniu' };
+    if (M.fillOf(m) > 1e-6) return { ok: false, reason: 'Na przyczepie leży plon (magazyn tymczasowy) — najpierw sprzedaj albo zmagazynuj' };
     const price = M.sellQuote(uid);
     G.S.machines = G.S.machines.filter(x => x !== m);
     G.finance.earn(price, 'sprzedaż', 'Sprzedaż: ' + d.name);
@@ -250,6 +252,50 @@
     return { ok: true, fromStock, bought: rest, cost };
   };
 
+  // ---------- magazyn tymczasowy: pełne przyczepy na podwórzu ----------
+  // Przyczepa, która wróciła z pola, a w magazynie nie było miejsca, zostaje pełna na podwórzu. Plon JEST w G.inv (można go sprzedać),
+  // a przyczepa dokłada pojemność puli — moduł budynków pyta G.machines.yardStorage(pula) → tony. Co godzinę ładunek przyczep jest
+  // „przelewany” do budynków, jeśli zwolniło się tam miejsce (sprzedaż, nowy silos) — przyczepa opróżnia się sama i wraca do floty.
+  M.fillOf = function (m) { let t = 0; if (m && m.fill) for (const k in m.fill) t += +m.fill[k] || 0; return t; };
+  const poolOf = id => (G.buildings && G.buildings.poolOf) ? G.buildings.poolOf(id) : (G.PRODUCTS[id] && G.PRODUCTS[id].cat === 'zboże' ? 'zboże' : null);
+  M.yardStorage = function (pool) {
+    let t = 0;
+    for (const m of M.list()) if (m.fill) for (const id in m.fill) if (m.fill[id] > 0 && poolOf(id) === pool) t += m.fill[id];
+    return Math.round(t * 1000) / 1000;
+  };
+  // przyczepy z ładunkiem (dla UI): [{ uid, name, fill: {id: t}, tons }]
+  M.yardTrailers = () => M.list().filter(m => M.fillOf(m) > 1e-6).map(m => ({ uid: m.uid, name: def(m).name, fill: Object.assign({}, m.fill), tons: Math.round(M.fillOf(m) * 1000) / 1000 }));
+  function syncYardStorage() {
+    if (!(G.buildings && G.buildings.storage)) return;
+    const loaded = M.list().filter(m => M.fillOf(m) > 1e-6 && !m.busy);
+    if (!loaded.length) return;
+    let pools;
+    try { pools = G.buildings.storage(); } catch (e) { return; }
+    for (const P of pools) {
+      const trs = loaded.filter(m => m.fill && Object.keys(m.fill).some(id => m.fill[id] > 0 && poolOf(id) === P.key));
+      if (!trs.length) continue;
+      // ile MUSI zostać na przyczepach: zapas ponad pojemność budynków (cap bez części tymczasowej)
+      const buildingsCap = Math.max(0, P.cap - (P.temp || 0));
+      let mustKeep = Math.max(0, P.used - buildingsCap);
+      let have = 0; for (const m of trs) for (const id in m.fill) if (poolOf(id) === P.key) have += m.fill[id];
+      let drop = have - mustKeep;
+      if (drop <= 1e-6) continue;
+      // opróżniamy od najmniej załadowanej
+      trs.sort((a, b) => M.fillOf(a) - M.fillOf(b));
+      for (const m of trs) {
+        for (const id of Object.keys(m.fill)) {
+          if (drop <= 1e-6) break;
+          if (poolOf(id) !== P.key) continue;
+          const q = Math.min(m.fill[id], drop);
+          m.fill[id] = Math.round((m.fill[id] - q) * 1000) / 1000; drop -= q;
+          if (m.fill[id] <= 1e-6) delete m.fill[id];
+        }
+        if (M.fillOf(m) <= 1e-6) { m.fill = null; G.notify('🚜 ' + def(m).name + ' rozładowana — plon trafił do magazynu, przyczepa wolna', 'good', { key: 'yardfree_' + m.uid }); }
+      }
+    }
+  }
+  M.syncYardStorage = syncYardStorage;
+
   // ---------- garaż ----------
   M.slots = function () {
     if (G.buildings && G.buildings.machineSlots) { const s = +G.buildings.machineSlots(); if (s >= 0) return s; }
@@ -367,6 +413,7 @@
       }
     }
     if (S.machineMarket && S.tick >= S.machineMarket.next) refreshUsed();
+    syncYardStorage();
   });
   G.on('daily', () => {
     restow();
@@ -394,6 +441,7 @@
       if (m.busy === undefined) m.busy = null;
       if (!m.year) m.year = G.date().year;
       m.broken = !!m.broken; m.repairUntil = +m.repairUntil || 0; m.rented = !!m.rented; m.until = +m.until || 0;
+      if (m.fill && typeof m.fill === 'object') { for (const k in m.fill) if (!(m.fill[k] > 0)) delete m.fill[k]; if (!Object.keys(m.fill).length) m.fill = null; } else m.fill = null;
     }
     if (!S.machineMarket || !Array.isArray(S.machineMarket.offers)) refreshUsed();
     restow();
