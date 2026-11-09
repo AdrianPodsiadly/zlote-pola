@@ -1,5 +1,10 @@
 # Złote Pola — historia zmian
 
+## 0.1.5
+
+- Sadzeniaki leżą teraz razem z ziemniakami (kopiec polowy 40 t + budynki), a nie z nasionami (3 t) — można kupić sadzeniaki na kilka hektarów.
+- Nowy budynek: **Przechowalnia ziemniaków** (80 t → 250 t → 600 t → 1200 t z chłodzeniem), z własną grafiką.
+
 ## 0.1.4
 
 - Naprawiony „Błąd ekranu” w Rynku → Sklep (nazwy klas CSS ze spacją wywracały cały ekran). Przegląd wszystkich paneli i zakładek — bez błędów.

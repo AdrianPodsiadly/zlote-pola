@@ -734,7 +734,7 @@
   // BUDOWA I BUDYNKI
   // =====================================================================================================
   const BCATS = [{ id: 'all', label: 'Wszystko' }, { id: 'magazyn', label: '📦 Magazyny' }, { id: 'inwentarski', label: '🐄 Inwentarskie' }, { id: 'techniczny', label: '🔧 Techniczne' }, { id: 'produkcja', label: '🏭 Produkcja' }, { id: 'mieszkalny', label: '🏠 Dom' }];
-  const bIcon = m => ({ house: '🏠', barn: '🏚️', garage: '🏗️', henhouse: '🐔', cowshed: '🐄', pigsty: '🐖', sheepfold: '🐑', silo: '🛢️', granary: '🏬', hayshed: '🌾', silage_clamp: '🟩', manure_pad: '💩', workshop: '🔧', fuel_station: '⛽', greenhouse: '🥬', apiary: '🐝', stable: '🐴', biogas: '⚡' }[m] || '🏗️');
+  const bIcon = m => ({ house: '🏠', barn: '🏚️', garage: '🏗️', henhouse: '🐔', cowshed: '🐄', pigsty: '🐖', sheepfold: '🐑', silo: '🛢️', granary: '🏬', potato_store: '🥔', hayshed: '🌾', silage_clamp: '🟩', manure_pad: '💩', workshop: '🔧', fuel_station: '⛽', greenhouse: '🥬', apiary: '🐝', stable: '🐴', biogas: '⚡' }[m] || '🏗️');
   U.panel('build', {
     title: 'Budowa', live: 4000,
     sub: () => { const bl = U.call('buildings.list', [], []) || []; const b = bl.filter(x => x.progress < 1).length; return bl.length + ' budynków' + (b ? ' · ' + b + ' w budowie' : ''); },

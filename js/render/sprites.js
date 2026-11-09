@@ -1019,6 +1019,24 @@
     if (L >= 2) { m.cyl('z', -w / 2 - 0.18, h / 2 - 0.2, 0, 0.1, 0, H + 0.6, '#c9cdd1', 12); m.box(-w / 2 - 0.18, h / 2 - 0.2, H + 0.6, 0.2, 0.2, 0.08, '#8a8a8e'); }
     m.anchor('door', w / 2 + 0.1, 0, 0);
   });
+  // przechowalnia ziemniaków: niska hala z płyt warstwowych, wywietrzniki na kalenicy, brama na wózek widłowy, skrzyniopalety przed wejściem
+  DEF.potato_store = withConstruction(function (m, o) {
+    const d = dims(o, 2, 2), L = lvl(o), wall = col(o, '#c7c2b4');
+    const w = d.w * 0.86, h = d.h * 0.78, H = 0.42 + 0.06 * (L - 1);
+    m.box(0, 0, 0, w + 0.04, h + 0.04, 0.05, CONCRETE);
+    m.box(0, 0, 0.05, w, h, H, wall);
+    // poziome łączenia płyt warstwowych
+    for (let k = 1; k < 4; k++) { m.box(0, h / 2 + 0.003, 0.05 + H * k / 4, w, 0.004, 0.006, shade(wall, 0.85)); m.box(w / 2 + 0.003, 0, 0.05 + H * k / 4, 0.004, h, 0.006, shade(wall, 0.85)); }
+    m.gable(0, 0, H + 0.05, w, h, 0.2, '#6f7a74', 0.08);
+    // wywietrzniki (więcej na wyższych poziomach)
+    const nv = 1 + Math.min(3, L);
+    for (let i = 0; i < nv; i++) { const x = -w / 2 + (i + 0.5) * w / nv; m.box(x, 0, H + 0.2, 0.08, 0.08, 0.12, '#9aa0a6'); m.box(x, 0, H + 0.32, 0.12, 0.12, 0.025, '#6a6c70'); }
+    door(m, 'x+', w / 2, 0, 0.05, h * 0.42, H * 0.8, '#5c6a62');
+    if (L >= 4) { m.box(-w / 4, -h / 2 - 0.08, 0.05, 0.22, 0.12, 0.16, '#d6d9dc'); m.cyl('x', -w / 4, -h / 2 - 0.08, 0.13, 0.05, -w / 4 - 0.06, -w / 4 + 0.06, '#7a7f87', 10); }
+    // skrzyniopalety z ziemniakami przed bramą
+    for (let i = 0; i < 2; i++) { const y = -0.12 + i * 0.24; m.box(w / 2 + 0.2, y, 0.05, 0.16, 0.16, 0.12, '#a07a4a'); m.box(w / 2 + 0.2, y, 0.17, 0.14, 0.14, 0.02, '#b98d55'); }
+    m.anchor('door', w / 2 + 0.1, 0, 0);
+  });
   DEF.hayshed = withConstruction(function (m, o) {
     const d = dims(o, 2, 1), L = lvl(o), c = col(o, '#a0703c');
     const w = d.w * 0.86, h = d.h * 0.84, H = 0.5 + 0.06 * (L - 1);

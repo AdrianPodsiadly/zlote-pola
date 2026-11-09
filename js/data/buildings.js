@@ -10,7 +10,7 @@
 //
 // Pojemności są ABSOLUTNE dla danego poziomu (nie sumują się z poprzednimi poziomami tego samego budynku).
 // Klucze pul magazynowych (G.BUILDING_POOLS): 'zboże' (t), 'bele' (siano + słoma, bel), 'sianokiszonka' (bel), 'kiszonka' (t),
-// 'ziemniaki' (t), 'buraki' (t), 'nawozy' (t), 'środki ochrony' (l), 'nasiona' (t), 'obornik' (t), 'gnojowica' (m3), 'mleko' (l),
+// 'ziemniaki' (t, razem z sadzeniakami), 'buraki' (t), 'nawozy' (t), 'środki ochrony' (l), 'nasiona' (t), 'obornik' (t), 'gnojowica' (m3), 'mleko' (l),
 // 'mleko_kozie' (l), 'jaja' (szt), 'ON' (l), 'produkty' (wełna + miód, kg), 'warzywa' (kg),
 // 'pasza' (t) — zbiorniki paszowe tylko na pasza_tresciwa; nadwyżka paszy ponad zbiorniki zajmuje pulę 'zboże'.
 //
@@ -28,11 +28,11 @@ window.G = window.G || {};
     'bele':           { name: 'Siano i słoma',           unit: 'bela', base: 40,  loss: 0.003, rainLoss: 0.01,  baseNote: 'sterta pod gołym niebem' },
     'sianokiszonka':  { name: 'Sianokiszonka (owijane)', unit: 'bela', base: 400, loss: 0.0005 },
     'kiszonka':       { name: 'Kiszonka',                unit: 't',    base: 150, loss: 0.0025, baseNote: 'pryzma na ziemi pod folią' },
-    'ziemniaki':      { name: 'Ziemniaki',               unit: 't',    base: 40,  loss: 0.003, baseNote: 'kopiec polowy' },
+    'ziemniaki':      { name: 'Ziemniaki i sadzeniaki',  unit: 't',    base: 40,  loss: 0.003, baseNote: 'kopiec polowy' },
     'buraki':         { name: 'Buraki',                  unit: 't',    base: 500, loss: 0.002, baseNote: 'pryzma przy drodze' },
     'nawozy':         { name: 'Nawozy',                  unit: 't',    base: 10 },
     'środki ochrony': { name: 'Środki ochrony roślin',   unit: 'l',    base: 60 },
-    'nasiona':        { name: 'Nasiona i sadzeniaki',    unit: 't',    base: 3 },
+    'nasiona':        { name: 'Nasiona',                 unit: 't',    base: 3 },
     'obornik':        { name: 'Obornik',                 unit: 't',    base: 40,  baseNote: 'pryzma polowa (max kilka tygodni)' },
     'gnojowica':      { name: 'Gnojowica',               unit: 'm3',   base: 30,  baseNote: 'kanały pod rusztami' },
     'mleko':          { name: 'Mleko krowie (schładzalnik)', unit: 'l', base: 0 },
@@ -204,6 +204,17 @@ window.G = window.G || {};
           desc: 'Dobudowana nawa.' },
         { name: 'Magazyn 1500 t z wentylacją', price: 600000, buildDays: 14, slots: 4, capacity: { 'zboże': 1500, 'nasiona': 100, 'nawozy': 200, 'ziemniaki': 600, 'środki ochrony': 500 },
           desc: 'Aktywna wentylacja podłogowa, przechowalnia ziemniaków.' }
+      ]
+    }),
+
+    potato_store: B({
+      name: 'Przechowalnia ziemniaków', cat: 'magazyn', size: [2, 2], model: 'potato_store', color: '#c7c2b4',
+      desc: 'Izolowana hala na ziemniaki i sadzeniaki — skrzyniopalety lub luzem, z wentylacją. Bez strat z kopca polowego.',
+      levels: [
+        { name: 'Przechowalnia 80 t', price: 85000, buildDays: 6, capacity: { 'ziemniaki': 80 }, desc: 'Ocieplona hala, wentylacja grawitacyjna.' },
+        { name: 'Przechowalnia 250 t', price: 160000, buildDays: 8, capacity: { 'ziemniaki': 250 }, desc: 'Dobudowa i wentylacja mechaniczna.' },
+        { name: 'Przechowalnia 600 t', price: 260000, buildDays: 10, capacity: { 'ziemniaki': 600 }, desc: 'Komory z wentylacją podłogową i sterowaniem.' },
+        { name: 'Przechowalnia 1200 t z chłodzeniem', price: 420000, buildDays: 12, capacity: { 'ziemniaki': 1200 }, desc: 'Agregat chłodniczy — ziemniaki do późnej wiosny.' }
       ]
     }),
 

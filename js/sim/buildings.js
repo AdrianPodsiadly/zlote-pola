@@ -193,7 +193,7 @@
     else if (id === 'siano' || id === 'sloma') k = 'bele';
     else if (id === 'sianokiszonka') k = 'sianokiszonka';
     else if (id === 'kiszonka') k = 'kiszonka';
-    else if (id === 'ziemniaki') k = 'ziemniaki';
+    else if (id === 'ziemniaki' || id === 'nasiona_ziemniaki') k = 'ziemniaki';   // sadzeniaki leżą w przechowalni / kopcu, nie z nasionami
     else if (id === 'buraki') k = 'buraki';
     else if (id.indexOf('nasiona_') === 0 || cat === 'nasiona') k = 'nasiona';
     else if (['obornik', 'gnojowica', 'mleko', 'mleko_kozie', 'jaja', 'ON', 'warzywa'].includes(id)) k = id;

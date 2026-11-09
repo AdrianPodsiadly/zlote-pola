@@ -79,7 +79,7 @@ Teksty i komentarze **po polsku**. Grane głównie na **telefonie** (iPhone, pod
 - Klucze modeli (sprite'y proceduralne; nieznany klucz → ogólna bryła w kolorze `color`):
   - pojazdy: `tractor_small`, `tractor_mid`, `tractor_big`, `combine`, `telehandler`, `pickup`, `forage_harvester`;
   - narzędzia/przyczepy: `plow`, `cultivator`, `seeder`, `planter`, `sprayer`, `spreader`, `manure_spreader`, `mower`, `rake`, `baler`, `trailer`, `tank`, `header`, `potato_harvester`, `beet_harvester`;
-  - budynki: `house`, `barn`, `garage`, `henhouse`, `cowshed`, `pigsty`, `sheepfold`, `silo`, `granary`, `hayshed`, `manure_pad`, `workshop`, `fuel_station`, `greenhouse`, `biogas`, `apiary`, `stable`;
+  - budynki: `house`, `barn`, `garage`, `henhouse`, `cowshed`, `pigsty`, `sheepfold`, `silo`, `granary`, `potato_store`, `hayshed`, `manure_pad`, `workshop`, `fuel_station`, `greenhouse`, `biogas`, `apiary`, `stable`;
   - zwierzęta: `hen`, `cow`, `calf`, `pig`, `sheep`, `goat`, `horse`, `bee`;
   - uprawy (`look.style`): `grain`, `rapeseed`, `maize`, `root`, `beet`, `grass`, `sunflower`.
 - `G.view = { hover, selParcel, highlight:[idx], place:{type,x,y,rot,valid}|null, selBuilding, selVehicle }` — ustawia UI.
@@ -102,6 +102,6 @@ Teksty i komentarze **po polsku**. Grane głównie na **telefonie** (iPhone, pod
 - `G.machines.at(x, y, r)`, `G.machines.actions(uid, target) → [{id, label, icon, enabled, reason}]` (goto, work, hitch, unhitch, lower, raise, follow_combine, unload, refuel, garage, assign_driver, stop, drive), `G.machines.command(uid, actionId, target, params) → {ok, reason}`.
 - `G.drive`: `take(uid)`, `release()`, `active()`, `input({throttle, steer, brake})` co klatkę (czas rzeczywisty, niezależny od prędkości gry), `toggleImplement()`, `hitchNearest()`, `unhitch()`, `unloadAuger()`, `needParams()/setParams(p)`, `state() → {speed, gear, fuel, implement, lowered, fill, tile, parcelId, canHitch, hints}`. Opuszczone narzędzie obrabia kafle (`G.fields.workTile`) pod szerokością roboczą.
 - UI: tap = wybór pojazdu (`G.view.selVehicle`), prawy klik / długie przytrzymanie = menu akcji, przycisk „Prowadź” → HUD jazdy (joystick / WASD). Grafika: pierścień zaznaczenia, odczepione narzędzia, `lowered`, `manual`.
-### Silosy (zrealizowane): `silo_hopper` (variant 'hopper'), `silo_flat` ('flat'), `feed_bin` ('feed'), `granary`, `barn` — pojemności w t; grafika rozróżnia po `G.BUILDINGS[type].variant`.
+### Silosy (zrealizowane): `silo_hopper` (variant 'hopper'), `silo_flat` ('flat'), `feed_bin` ('feed'), `granary`, `barn` — pojemności w t; `potato_store` — przechowalnia ziemniaków (pula 'ziemniaki', do której należą też sadzeniaki `nasiona_ziemniaki`); grafika rozróżnia po `G.BUILDINGS[type].variant`.
 ### Balans upraw (DO ZROBIENIA — agent upraw): dobra agrotechnika ma wygrywać z zaniedbaniem w ≥85% symulacji po 2 latach; klasy jakości ziarna (konsumpcyjna/paszowa, `G.market.price(id, quality?)`).
 ### Dźwięk (DO ZROBIENIA — agent dźwięku): `js/ui/sound.js` → `G.sound` (unlock, toggle, setVol, CHANNELS, play, duck, update); UI dodaje przycisk i suwaki.
