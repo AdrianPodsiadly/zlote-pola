@@ -8,6 +8,12 @@
 //   - sprzedaż dużych partii obniża lokalnie cenę (max −5%, odrabia się w kilka dni).
 // SKLEP vs SKUP: środki produkcji (PRODUCTS.shop) kupujemy po cenie bieżącej, odsprzedaż = 60%;
 //   płody rolne sprzedajemy do skupu po cenie bieżącej, a kupić (np. paszę) można za +15%.
+// JAKOŚĆ PARTII: magazyn trzyma średnią ważoną jakości q (0..1) per produkt — G.S.market.quality[id] = { q, qty }.
+//   Pola zgłaszają partię przy starcie zbioru (G.market.noteHarvest(id, qty, q)); każdy przyrost magazynu (hook
+//   'inventory') bierze jakość z oczekującej partii, a zakupy ze sklepu mają jakość standardową (0,7).
+//   Klasy (G.GRADES w data/crops.js): price(id) = cena referencyjna (klasa bazowa, factor 1), price(id, q | klasa) =
+//   cena dla jakości; stockPrice(id) = cena za to, co leży w magazynie; sell() płaci wg stockPrice.
+//   Umowy: dostawa partii gorszej niż klasa bazowa jest potrącana (× factor), lepsza nie podnosi ceny umownej.
 // DOPŁATY (grudzień, stawki przybliżone 2025, warunki uproszczone): podstawowa 490 zł/ha, redystrybucyjna 175 zł/ha
 //   (1–30 ha), młody rolnik 225 zł/ha (do 50 ha, pierwsze 5 lat), ekoschematy: zróżnicowana struktura upraw 180 zł/ha
 //   (≥ 3 uprawy w czerwcu, główna ≤ 65%), wapnowanie (plan nawożenia z wapnowaniem) 150 zł/ha, obornik przyorany
@@ -58,7 +64,8 @@
     return {
       g: {}, t: {}, shock: {}, shockT: {}, noise: {}, press: {}, cur: {}, hist: {}, histDay: -1,
       contracts: [], loans: [], nextId: 1, sub: { structure: null, year: 0, last: null }, youngUntil: C.START_YEAR + 5,
-      stats: {}, lastTaxYear: 0
+      stats: {}, lastTaxYear: 0,
+      quality: {}, pending: {}
     };
   }
   function ensureProduct(S, id) {
@@ -128,14 +135,78 @@
     S.histDay = di;
   }
 
+  // ---------- jakość partii ----------
+  const DEFAULT_Q = 0.7;   // jakość towaru kupionego w sklepie / nieznanego pochodzenia (klasa bazowa)
+  function gradeFor(id, q) {
+    if (G.fields && G.fields.gradeFor) return G.fields.gradeFor(id, q);
+    return { grade: 'standard', label: 'standardowa', factor: 1 };
+  }
+  // zgłoszenie partii z pola (wołane przez sim/fields.js na starcie zbioru/prasowania): kolejne przyrosty magazynu
+  // tego produktu dostaną tę jakość, dopóki partia się nie „wyczerpie” (lub zestarzeje — 12 dni)
+  M.noteHarvest = function (id, qty, q, pid) {
+    const S = G.S && G.S.market; if (!S || !(qty > 0)) return;
+    if (!S.pending) S.pending = {};
+    const P = S.pending[id] || (S.pending[id] = { qty: 0, qsum: 0, day: 0 });
+    P.qty += qty; P.qsum += qty * clamp(q == null ? DEFAULT_Q : q, 0, 1); P.day = G.date().dayIndex;
+    void pid;
+  };
+  function onInventory(id, dq) {
+    const S = G.S && G.S.market; if (!S || !dq) return;
+    if (!S.quality) S.quality = {};
+    if (!S.pending) S.pending = {};
+    const have = G.inv.get(id);
+    if (dq < 0) {
+      const Q = S.quality[id];
+      if (Q) { Q.qty = Math.max(0, Math.round((Q.qty + dq) * 1000) / 1000); if (have <= 1e-9) delete S.quality[id]; }
+      return;
+    }
+    if (!(G.PRODUCTS[id] && G.PRODUCTS[id].base > 0) || isShop(id)) return;   // środki produkcji bez klas
+    let qi = DEFAULT_Q;
+    const P = S.pending[id];
+    if (P && P.qty > 1e-9) {
+      qi = P.qsum / P.qty;
+      const used = Math.min(dq, P.qty);
+      P.qty -= used; P.qsum -= used * qi;
+      if (P.qty <= 1e-6) delete S.pending[id];
+    }
+    const Q = S.quality[id] || (S.quality[id] = { q: qi, qty: 0 });
+    const base = Math.min(Q.qty, Math.max(0, have - dq));   // stan sprzed przyrostu (zabezpieczenie po wczytaniu)
+    Q.q = Math.round((Q.q * base + qi * dq) / (base + dq) * 1000) / 1000;
+    Q.qty = Math.round((base + dq) * 1000) / 1000;
+  }
+  // jakość tego, co leży w magazynie → { q, grade, label, factor, qty, text }
+  M.qualityOf = function (id) {
+    const S = G.S && G.S.market, Q = S && S.quality && S.quality[id];
+    const q = Q && G.inv.get(id) > 0 ? Q.q : DEFAULT_Q;
+    const g = gradeFor(id, q), spec = G.GRADES && G.GRADES[id];
+    return Object.assign({ q, qty: G.inv.get(id), graded: !!(spec && spec.grades), text: (spec && spec.grades ? 'klasa ' + g.label : 'jakość ' + Math.round(q * 100) + '%') }, g);
+  };
+  // lista klas dla produktu (UI) → [{ grade, label, factor, price }]
+  M.grades = function (id) {
+    const spec = G.GRADES && G.GRADES[id];
+    if (!spec || !spec.grades) return [];
+    return spec.grades.map(g => ({ grade: g.id, label: g.label, factor: g.factor, price: Math.round(M.price(id) * g.factor * 100) / 100 }));
+  };
+  // mnożnik ceny dla jakości: liczba 0..1 albo id klasy ('paszowa'), undefined → 1
+  function qFactor(id, quality) {
+    if (quality == null) return 1;
+    if (typeof quality === 'string') { const spec = G.GRADES && G.GRADES[id], g = spec && spec.grades && spec.grades.find(x => x.id === quality); return g ? g.factor : 1; }
+    if (typeof quality === 'object' && quality.factor != null) return quality.factor;
+    return gradeFor(id, +quality).factor;
+  }
+
   // ---------- ceny ----------
-  // price(id) — cena skupu (za ile sprzedasz); buyPrice(id) — cena zakupu (sklep / od sąsiada)
-  M.price = function (id) {
+  // price(id, quality?) — cena skupu (za ile sprzedasz) dla klasy bazowej, albo dla podanej jakości (0..1 | id klasy);
+  // buyPrice(id) — cena zakupu (sklep / od sąsiada); stockPrice(id) — cena za partię leżącą w magazynie
+  M.price = function (id, quality) {
     const S = G.S && G.S.market, c = S && S.cur[id];
     const p = G.PRODUCTS[id];
-    if (c == null) return p ? p.base * (isShop(id) ? 0.6 : 1) : 0;
-    return isShop(id) ? Math.round(c * 0.6 * 100) / 100 : c;
+    const f = qFactor(id, quality);
+    if (c == null) return p ? Math.round(p.base * (isShop(id) ? 0.6 : f) * 100) / 100 : 0;
+    const v = isShop(id) ? c * 0.6 : c * f;
+    return v >= 100 ? Math.round(v) : Math.round(v * 100) / 100;
   };
+  M.stockPrice = function (id) { return isShop(id) ? M.price(id) : M.price(id, M.qualityOf(id).q); };
   M.buyPrice = function (id) {
     const S = G.S && G.S.market, p = G.PRODUCTS[id];
     const c = (S && S.cur[id] != null) ? S.cur[id] : (p ? p.base : 0);
@@ -165,8 +236,11 @@
       hint = 'zwykle najdrożej: ' + G.MONTHS[best] + ', najtaniej: ' + G.MONTHS[worst];
       void m;
     }
+    const q = isShop(id) ? null : M.qualityOf(id);
     return { id, name: p ? p.name : id, unit: p ? p.unit : '', icon: p ? p.icon : '', price: M.price(id), buy: M.buyPrice(id), base: p ? p.base : 0,
-      change: wk ? Math.round((now / wk - 1) * 1000) / 10 : 0, vsBase: p && p.base ? Math.round((now / p.base - 1) * 1000) / 10 : 0, have: G.inv.get(id), hint };
+      change: wk ? Math.round((now / wk - 1) * 1000) / 10 : 0, vsBase: p && p.base ? Math.round((now / p.base - 1) * 1000) / 10 : 0, have: G.inv.get(id), hint,
+      // jakość partii w magazynie i cena, jaką za nią dostaniesz (różni się od price, gdy klasa ≠ bazowa)
+      quality: q, stockPrice: q ? M.stockPrice(id) : M.price(id), grades: M.grades(id) };
   };
   // lista produktów do ekranu rynku: [{...info, cat, canBuy, canSell}]
   M.list = function (filter) {
@@ -188,9 +262,9 @@
     const p = G.PRODUCTS[id];
     if (p.unit === 'bela' || p.unit === 'szt') qty = Math.floor(qty + 1e-9);
     if (!(qty > 0)) return 0;
-    const price = M.price(id), total = Math.round(price * qty * 100) / 100;
+    const qi = M.qualityOf(id), price = M.stockPrice(id), total = Math.round(price * qty * 100) / 100;
     if (!G.inv.take(id, qty)) return 0;
-    G.finance.earn(total, 'sprzedaż', 'Sprzedaż: ' + G.fmtQty(id, qty) + ' ' + p.name.toLowerCase() + ' po ' + G.fmtNum(price, 2) + ' zł/' + p.unit);
+    G.finance.earn(total, 'sprzedaż', 'Sprzedaż: ' + G.fmtQty(id, qty) + ' ' + p.name.toLowerCase() + (qi.graded ? ' (' + qi.label + ')' : '') + ' po ' + G.fmtNum(price, 2) + ' zł/' + p.unit);
     // presja podaży na lokalny skup (duże partie)
     const S = G.S.market, big = p.unit === 't' ? qty / 400 : qty / 4000;
     S.press[id] = clamp((S.press[id] || 0) + big * 0.05, 0, 0.05);
@@ -324,10 +398,12 @@
     let q = Math.min(qty == null ? rem : +qty, rem, G.inv.get(c.product));
     const p = G.PRODUCTS[c.product];
     if (p.unit === 'bela' || p.unit === 'szt') q = Math.floor(q + 1e-9);
+    const qi = M.qualityOf(c.product);
     if (!(q > 0) || !G.inv.take(c.product, q)) return 0;
-    const total = Math.round(q * c.price * 100) / 100;
+    // partia gorsza niż klasa bazowa → potrącenie wg klasy (lepsza nie podnosi ceny umownej)
+    const unit = Math.round(c.price * Math.min(1, qi.factor) * 100) / 100, total = Math.round(q * unit * 100) / 100;
     c.delivered = Math.round((c.delivered + q) * 1000) / 1000;
-    G.finance.earn(total, 'sprzedaż', 'Umowa (' + c.buyer + '): ' + G.fmtQty(c.product, q) + ' po ' + G.fmtNum(c.price, 2) + ' zł');
+    G.finance.earn(total, 'sprzedaż', 'Umowa (' + c.buyer + '): ' + G.fmtQty(c.product, q) + ' po ' + G.fmtNum(unit, 2) + ' zł' + (qi.factor < 1 ? ' (potrącenie: ' + qi.label + ')' : ''));
     stat('sales', total); stat('contracts', total);
     G.emit('sold', c.product, q, total);
     if (c.delivered >= c.qty - 1e-6) { c.status = 'done'; c.closed = G.date().dayIndex; G.notify('✅ Umowa wykonana: ' + p.name + ' dla ' + c.buyer, 'money'); }
@@ -505,7 +581,7 @@
       const p = G.PRODUCTS[id];
       if (!p || isShop(id) || !M.canSell(id) || !(G.inv.get(id) > 0)) continue;
       const i = M.info(id);
-      if (i.vsBase >= 8) out.push({ key: 'sellhigh_' + id, icon: '📈', title: 'Dobra cena: ' + p.name, text: G.fmtNum(i.price, 2) + ' zł/' + p.unit + ' (' + (i.vsBase > 0 ? '+' : '') + i.vsBase + '% wobec średniej). W magazynie ' + G.fmtQty(id, i.have) + '.', priority: 3, action: 'market', product: id });
+      if (i.vsBase >= 8) out.push({ key: 'sellhigh_' + id, icon: '📈', title: 'Dobra cena: ' + p.name, text: G.fmtNum(i.stockPrice, 2) + ' zł/' + p.unit + (i.quality && i.quality.graded ? ' (' + i.quality.label + ')' : '') + ' (' + (i.vsBase > 0 ? '+' : '') + i.vsBase + '% wobec średniej). W magazynie ' + G.fmtQty(id, i.have) + '.', priority: 3, action: 'market', product: id });
     }
     const offers = S.contracts.filter(c => c.status === 'offer');
     if (offers.length) out.push({ key: 'offers', icon: '✍️', title: 'Nowe oferty umów (' + offers.length + ')', text: offers.slice(0, 2).map(c => cview(c).text).join('; '), priority: 3, action: 'market' });
@@ -525,14 +601,18 @@
     const b = blankState();
     for (const k in b) if (S[k] === undefined) S[k] = b[k];
     for (const id in G.PRODUCTS) ensureProduct(S, id);
+    for (const id in S.quality) if (!(G.inv.get(id) > 0)) delete S.quality[id];
     computeAll(G.date().month);
   });
+  G.on('inventory', (id, dq) => { try { onInventory(id, dq); } catch (e) { console.error('[market.quality]', e); } });
   G.on('daily', d => {
     const S = G.S.market; if (!S) return;
     for (const id in G.PRODUCTS) if (S.t[id] == null) ensureProduct(S, id);
     step(d.dayIndex, false);
     pushHist(d.dayIndex);
     contractsDaily(d);
+    // niewykorzystane zgłoszenia partii (np. ziarno sprzedane prosto z przyczepy) wygasają po 12 dniach
+    if (S.pending) for (const id in S.pending) if (d.dayIndex - S.pending[id].day > 12) delete S.pending[id];
   });
   G.on('monthly', d => {
     if (!G.S.market) return;

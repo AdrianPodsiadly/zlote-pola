@@ -8,14 +8,20 @@
 //   plon:   yieldBase × gleba × pH × NPK × płodozmian × termin siewu × przygotowanie roli × yp × (1 − straty po terminie) × pokrycie
 //           yp (potencjał 0..1) maleje od: suszy (najmocniej w fazie 0,35–0,8), chwastów, chorób, szkodników, mrozu, gradu, zalania;
 //   NPK:    pule dostępnych składników na polu (kg/ha: N, P2O5, K2O). Roślina pobiera need × Δgrowth; niedobór obniża plon:
-//           fN = 0,35 + 0,65·rN^0,7 (bez nawożenia azotem pszenica daje ~60–70% plonu), fP/fK = 0,75 + 0,25·r^0,6.
-//           Mineralizacja gleby: N 30–70 kg/ha/rok (lepsza gleba więcej), wietrzenie P ~15, K ~25 kg/ha/rok.
+//           fN = nFloor + (1 − nFloor)·rN^nExp (G.AGRO; bez nawożenia azotem pszenica daje ~55–65% plonu),
+//           fP/fK = pkFloor + (1 − pkFloor)·r^pkExp. Zapasy glebowe P/K odbudowują się powoli (~40%/rok), więc bez NPK
+//           niedobór narasta w 2.–3. roku. Mineralizacja gleby: N 24–60 kg/ha/rok (lepsza gleba więcej).
 //           Azot w zimie się wymywa (mokra gleba) — nawożenie azotem przed siewem jesiennym marnuje część dawki.
 //   pH:     spada naturalnie ~0,08/rok i od saletry; wapno 1 t/ha ≈ +0,15 pH, działa stopniowo (~2 miesiące gry).
 //   chwasty: rosną logistycznie, gdy ciepło (r ≈ 0,15/dzień), po zwarciu łanu wolniej; herbicyd −90% i 8 dni ochrony;
-//            orka zeruje zachwaszczenie, uprawa bezorkowa zostawia ~20%.
+//            orka zeruje zachwaszczenie, uprawa bezorkowa zostawia ~20%. Bez herbicydu: −25–30% plonu (G.AGRO.weedLoss).
 //   choroby: rosną przy wilgoci i 8–26 °C; zboże po zbożu / zbyt krótka przerwa → +40–50%; fungicyd −80% i 10 dni ochrony.
+//            Mokry rok bez fungicydu: −15–30% (G.AGRO.diseaseLoss).
 //   szkodniki: w ciepłe dni w fazie 0,15–0,75 (rzepak, ziemniaki najbardziej); insektycyd −85%, 8 dni ochrony.
+//            Rzepak bez insektycydu: −10–25% (G.AGRO.pestLoss).
+//   JAKOŚĆ PARTII: przy zbiorze liczymy q (0..1) i klasę wg G.GRADES (pszenica konsumpcyjna/paszowa, jęczmień
+//            browarny/paszowy, rzepak czysty/zanieczyszczony, ziemniaki jadalne/przemysłowe) → F.gradeOf(pid),
+//            history[].grade / quality; magazynowi przekazujemy ją przez G.market.noteHarvest (średnia ważona partii).
 // ZABIEGI: G.fields.OPS; prace wołają canDo → workTile (dla każdego obrobionego kafla 0,25 ha) → complete.
 //   workTile zużywa środki z magazynu proporcjonalnie (dawka/ha × 0,25).
 //   ZBIÓR ('harvest'): workTile NIE dodaje plonu do magazynu — zwraca { out: { produkt: t } }; ziarno/bulwy/zielonkę
@@ -44,6 +50,8 @@
   const REF_P = [0, 75, 70, 60, 50, 40, 30], REF_K = [0, 110, 100, 90, 75, 60, 45];
   // sąsiedzi gospodarują „przeciętnie” (kalibracja: ich plony ≈ średnie GUS)
   const NPC_MGMT = 0.95;
+  // współczynniki balansu (data/crops.js), z bezpiecznymi domyślnymi
+  const A = () => G.AGRO || { nFloor: 0.28, nExp: 0.85, pkFloor: 0.75, pkExp: 0.7, pkRecharge: 0.007, pkLock: 0.004, weedLoss: 0.85, diseaseLoss: 0.8, pestLoss: 0.7, floodLoss: 0.006, limePh: 0.15, phDrop: 0.08 };
   const DD_YEAR = 384;           // roczna suma (t−5 °C) w dniach gry — do rozkładu mineralizacji
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -257,10 +265,12 @@
     const g = Math.min(1, f.growth), minLeft = key === 'n' ? MIN_N[f.soil] * 0.45 * (1 - g) : 0;
     return clamp((f.up[key] + Math.min(Math.max(0, f[key]) + minLeft, need * (1 - g))) / need, 0, 1);
   }
+  // krzywe reakcji na składniki (G.AGRO): azot z nasyceniem, P/K ograniczają dopiero przy niskiej zasobności
+  F.nFactor = rN => { const a = A(); return a.nFloor + (1 - a.nFloor) * Math.pow(clamp(rN, 0, 1), a.nExp); };
+  F.pkFactor = r => { const a = A(); return a.pkFloor + (1 - a.pkFloor) * Math.pow(clamp(r, 0, 1), a.pkExp); };
   function nutFactor(f, c) {
     if (f.npc) return 1;
-    const rN = nutRatio(f, c, 'n'), rP = nutRatio(f, c, 'p'), rK = nutRatio(f, c, 'k');
-    return (0.35 + 0.65 * Math.pow(rN, 0.7)) * (0.75 + 0.25 * Math.pow(rP, 0.6)) * (0.75 + 0.25 * Math.pow(rK, 0.6));
+    return F.nFactor(nutRatio(f, c, 'n')) * F.pkFactor(nutRatio(f, c, 'p')) * F.pkFactor(nutRatio(f, c, 'k'));
   }
   function estimate(f, p) {
     const c = G.CROPS[f.crop];
@@ -278,6 +288,64 @@
   F.estimate = pid => { const f = F.get(pid); return f ? estimate(f, parcel(pid)) : 0; };
 
   // ---------------------------------------------------------------------------------------------------------------
+  // JAKOŚĆ PARTII — q (0..1) i klasa wg G.GRADES (liczone z bieżącego stanu pola; przy zbiorze = ostateczna)
+  // → { q, grade (id), label, factor (mnożnik ceny), text (opis dla UI) }
+  // ---------------------------------------------------------------------------------------------------------------
+  const lossPct = (f, k) => f.loss && f.loss[k] ? 1 - Math.exp(-f.loss[k]) : 0;
+  function gradeOf(f, c, productId) {
+    const id = productId || (c && c.product);
+    const spec = (G.GRADES && G.GRADES[id]) || G.GRADE_DEFAULT || { kind: 'feed', minFactor: 0.93 };
+    const cond = clamp(f.quality == null ? 1 : f.quality, 0, 1);
+    let q = cond, notes = [];
+    if (c && !c.meadow) {
+      const rN = nutRatio(f, c, 'n'), rK = nutRatio(f, c, 'k');
+      const dis = lossPct(f, 'choroby'), pest = lossPct(f, 'szkodniki'), weed = lossPct(f, 'chwasty');
+      switch (spec.kind) {
+        case 'protein': {   // białko ← azot; porastanie ← deszcz na dojrzałe ziarno (cond); choroby kłosa
+          const prot = clamp((rN - 0.45) / 0.45, 0, 1);
+          q = cond * prot * (1 - dis * 1.2);
+          if (prot < 0.4) notes.push('niskie białko (mało azotu)');
+          if (cond < 0.85) notes.push('ziarno porośnięte po deszczach');
+          break;
+        }
+        case 'malting': {   // dorodne, zdrowe ziarno, ale bez nadmiaru azotu
+          // w trakcie wzrostu roślina jeszcze pobierze część azotu — nadmiar liczymy ponad to, co zdąży pobrać
+          const excess = f.n > 50 + c.nNeed * (1 - Math.min(1, f.growth));
+          q = cond * (rN < 0.55 ? Math.pow(rN / 0.55, 1.5) : 1) * (excess ? 0.6 : 1) * (1 - dis * 1.5);
+          if (excess) notes.push('za dużo azotu — wysokie białko');
+          if (rN < 0.55) notes.push('drobne ziarno (mało azotu)');
+          break;
+        }
+        case 'oil':         // zanieczyszczenia i wilgotność
+          q = cond * (1 - pest * 2) * (1 - weed * 2) * (1 - dis * 2);
+          if (pest > 0.05 || weed > 0.08) notes.push('zanieczyszczenia (chwasty, szkodniki)');
+          if (cond < 0.85) notes.push('wilgotne nasiona');
+          break;
+        case 'tuber':       // zdrowe bulwy, bez zarazy i stonki, potas
+          q = cond * (1 - dis * 2) * (1 - pest * 2) * (rK < 0.6 ? 0.8 : 1);
+          if (dis > 0.05) notes.push('zaraza'); if (pest > 0.05) notes.push('uszkodzenia (stonka)'); if (rK < 0.6) notes.push('mało potasu');
+          break;
+        default:
+          q = cond * (1 - weed) * (1 - dis);
+      }
+    } else if (c && c.meadow && cond < 0.85) notes.push('pokos zmoczony / przerośnięty');
+    q = clamp(Math.round(q * 100) / 100, 0, 1);
+    return Object.assign({ q }, F.gradeFor(id, q), { text: notes.join(', ') });
+  }
+  // klasa dla produktu i jakości q → { grade, label, factor }
+  F.gradeFor = function (id, q) {
+    const spec = (G.GRADES && G.GRADES[id]) || G.GRADE_DEFAULT || { kind: 'feed', minFactor: 0.93 };
+    q = clamp(q == null ? 1 : q, 0, 1);
+    if (spec.grades) { for (const g of spec.grades) if (q >= g.min) return { grade: g.id, label: g.label, factor: g.factor }; const g = spec.grades[spec.grades.length - 1]; return { grade: g.id, label: g.label, factor: g.factor }; }
+    const mf = spec.minFactor == null ? 0.93 : spec.minFactor;
+    return { grade: q >= 0.8 ? 'standard' : 'obnizona', label: q >= 0.8 ? 'standardowa' : 'obniżona', factor: Math.round((mf + (1 - mf) * q) * 1000) / 1000 };
+  };
+  F.gradeOf = function (pid, productId) {
+    const f = F.get(pid); if (!f) return null;
+    return gradeOf(f, G.CROPS[f.crop], productId);
+  };
+
+  // ---------------------------------------------------------------------------------------------------------------
   // SYMULACJA DZIENNA
   // ---------------------------------------------------------------------------------------------------------------
   function dayUpdate(f, p, wx, d) {
@@ -286,11 +354,11 @@
     f.moisture = r2(moist);
     // --- gleba: pH, mineralizacja, wymywanie ---
     if (f.phPend > 0.001) { const dp = Math.min(f.phPend, Math.max(0.02, f.phPend * 0.12)); f.ph += dp; f.phPend -= dp; }
-    f.ph = clamp(f.ph - 0.08 / 72, 4.0, 8.0);
+    f.ph = clamp(f.ph - A().phDrop / 72, 4.0, 8.0);
     if (tmean > 5) f.n += MIN_N[f.soil] * (tmean - 5) / DD_YEAR;
     const rp = REF_P[f.soil], rk = REF_K[f.soil];
-    f.p += (rp - f.p) * (f.p < rp ? 0.012 : 0.004);
-    f.k += (rk - f.k) * (f.k < rk ? 0.012 : 0.004);
+    f.p += (rp - f.p) * (f.p < rp ? A().pkRecharge : A().pkLock);
+    f.k += (rk - f.k) * (f.k < rk ? A().pkRecharge : A().pkLock);
     if (wx.rainFell > wx.et + 2 && wx.moisture > 0.82) f.n -= f.n * 0.03;
     f.n = clamp(f.n, 0, 400); f.p = clamp(f.p, 0, 600); f.k = clamp(f.k, 0, 800);
     // --- fazy bez uprawy ---
@@ -344,11 +412,11 @@
       const stress = moist < 0.38 ? clamp((0.38 - moist) / 0.3, 0, 1) : 0;
       const crit = f.growth > 0.35 && f.growth < 0.8 ? 1.6 : 0.6;
       if (stress > 0) lose(f, 'susza', Math.min(0.03, 0.6 * stress * crit * dG * c.droughtSens));
-      if (moist > 0.97 && wx.rainFell > 10) lose(f, 'zalanie', 0.01);
+      if (moist > 0.97 && wx.rainFell > 12) lose(f, 'zalanie', A().floodLoss);
       // chwasty
       const warm = tmean > 6 ? 1 : 0;
       if (!(f.prot.herbicyd > d.dayIndex)) f.weeds = clamp(f.weeds + warm * (0.15 * f.weeds * (1 - f.weeds) * (1 - f.growth * 0.75) + 0.002), 0, 0.95);
-      if (f.growth < 0.85) lose(f, 'chwasty', 0.5 * f.weeds * c.weedSens * dG);
+      if (f.growth < 0.85) lose(f, 'chwasty', A().weedLoss * f.weeds * c.weedSens * dG);
       // choroby
       const fav = tmean > 8 && tmean < 26 && (moist > 0.55 || wx.rainFell > 3);
       if (!(f.prot.fungicyd > d.dayIndex) && c.diseaseSens > 0) {
@@ -356,13 +424,13 @@
         if (fav) f.disease = clamp(f.disease + (0.16 * f.disease * (1 - f.disease) + 0.006) * young * c.diseaseSens * (f.rotBad ? 1.45 : 1) * (f.tilled === 'min' ? 1.15 : 1), 0, 0.95);
         else f.disease = clamp(f.disease * 0.97, 0, 1);
       }
-      lose(f, 'choroby', 0.55 * f.disease * dG);
+      lose(f, 'choroby', A().diseaseLoss * f.disease * dG);
       // szkodniki
       if (!(f.prot.insektycyd > d.dayIndex) && c.pestSens > 0) {
         if (tmean > 10 && f.growth > 0.12 && f.growth < 0.8) f.pests = clamp(f.pests + (0.14 * f.pests * (1 - f.pests) + 0.005) * c.pestSens, 0, 0.95);
         else f.pests = clamp(f.pests * 0.95, 0, 1);
       }
-      lose(f, 'szkodniki', 0.45 * f.pests * dG);
+      lose(f, 'szkodniki', A().pestLoss * f.pests * dG);
     } else {
       // sąsiedzi prowadzą pola „poprawnie”: lekki obraz chwastów, bez strat
       f.weeds = 0.05 + 0.1 * f.growth; f.disease = 0.05; f.pests = 0.03;
@@ -618,13 +686,17 @@
     const w = { op, key: keyOf(op, params), params: JSON.parse(JSON.stringify(params || {})), done: new Uint8Array(p.tiles.length), count: 0, used: 0, input: null, out: {}, acc: 0, t0: G.S.tick };
     const inp = inputFor(f, op, params);
     if (inp) w.input = inp.id;
-    if (op === 'harvest') { w.yph = estimate(f, p); w.product = G.CROPS[f.crop].product; w.crop = f.crop; }
+    if (op === 'harvest') { w.yph = estimate(f, p); w.product = G.CROPS[f.crop].product; w.crop = f.crop; w.grade = gradeOf(f, G.CROPS[f.crop]); }
     if (op === 'bale') {
       if (p.kind === 'meadow') {
         w.product = params.product || (f.dry >= 1 ? 'siano' : 'sianokiszonka');
         w.yph = f.swath / p.area * (f.raked ? 1.05 : 1) * (w.product === 'sianokiszonka' ? 1.0 : 1);
-      } else { w.product = 'sloma'; w.yph = f.straw / p.area; }
+        w.grade = gradeOf(f, G.CROPS.trawa, w.product);
+      } else { w.product = 'sloma'; w.yph = f.straw / p.area; w.grade = F.gradeFor('sloma', 1); w.grade.q = 1; }
     }
+    // jakość partii zgłaszamy rynkowi już na starcie: plon trafia do magazynu stopniowo (przyczepy), a magazyn
+    // liczy średnią ważoną jakości partii per produkt
+    if (w.product && w.grade && G.market && G.market.noteHarvest) G.market.noteHarvest(w.product, w.yph * p.area * 1.05, w.grade.q, p.id);
     f.work = w;
     return w;
   }
@@ -723,9 +795,9 @@
         f.weeds = f.weeds * (1 - 0.5 * cov);
         break;
       case 'lime':
-        f.phPend += rateHa * 0.15;
+        f.phPend += rateHa * A().limePh;
         if (rateHa >= 1) f.flags.limed = d.year;
-        if (player) G.notify('⚪ ' + p.name + ': wapno rozsiane (' + G.fmtNum(rateHa) + ' t/ha) — pH wzrośnie o ~' + G.fmtNum(rateHa * 0.15, 2) + ' w ciągu 2 miesięcy', 'info', { parcel: p.id });
+        if (player) G.notify('⚪ ' + p.name + ': wapno rozsiane (' + G.fmtNum(rateHa) + ' t/ha) — pH wzrośnie o ~' + G.fmtNum(rateHa * A().limePh, 2) + ' w ciągu 2 miesięcy', 'info', { parcel: p.id });
         break;
       case 'fertilize': {
         const id = w.input, nut = G.NUTRIENTS[id] || { n: 0, p: 0, k: 0 };
@@ -762,7 +834,8 @@
         const c = G.CROPS[w.crop], q = w.out[w.product] || 0;
         const yHa = q / Math.max(0.01, p.area * cov);
         if (cov >= 0.97 || f.cover * (1 - cov) < 0.05) {
-          f.history.unshift({ crop: w.crop, year: d.year, yield: r2(yHa * (cov >= 0.97 ? 1 : 1)), area: p.area, qty: r2((f.harvestedQty || 0) + q), quality: r2(f.quality) });
+          const gr = w.grade || gradeOf(f, c);
+          f.history.unshift({ crop: w.crop, year: d.year, yield: r2(yHa), area: p.area, qty: r2((f.harvestedQty || 0) + q), quality: gr.q, grade: gr.grade, gradeLabel: gr.label });
           if (f.history.length > 8) f.history.length = 8;
           // słoma: 0,8–1,0 t na tonę ziarna → perT bel (250 kg) na tonę zebranego ziarna
           f.straw = c.byproduct ? Math.round(c.byproduct.perT * ((f.harvestedQty || 0) + q)) : 0;
@@ -773,8 +846,9 @@
           f.cover *= (1 - cov); f.harvestedQty = (f.harvestedQty || 0) + q;
         }
         G.emit('harvest', p.id, w.product, q);
-        if (player) G.notify('🌾 ' + p.name + ': zebrano ' + G.fmtQty(w.product, q) + ' (' + G.fmtNum(yHa, 1) + ' t/ha)', 'good', { parcel: p.id });
-        return { yieldHa: r2(yHa), qty: r2(q) };
+        const gl = w.grade && G.GRADES && G.GRADES[w.product] && G.GRADES[w.product].grades ? ', klasa: ' + w.grade.label : '';
+        if (player) G.notify('🌾 ' + p.name + ': zebrano ' + G.fmtQty(w.product, q) + ' (' + G.fmtNum(yHa, 1) + ' t/ha' + gl + ')', 'good', { parcel: p.id });
+        return { yieldHa: r2(yHa), qty: r2(q), grade: w.grade ? w.grade.grade : null, quality: w.grade ? w.grade.q : null };
       }
       case 'bale': {
         const q = w.out[w.product] || 0;
@@ -994,7 +1068,7 @@
       crop: f.crop, cropName: c ? c.name : null, prevCrop: f.last, prevCropName: f.last && G.CROPS[f.last] ? G.CROPS[f.last].name : null,
       phase: f.phase, phaseName: F.PHASE_NAMES[f.phase], stage: stageText(f, c, d), growth: r2(Math.min(1, f.growth)), growthPct: Math.round(Math.min(1, f.growth) * 100),
       product: c ? c.product : null, productName: c ? G.PRODUCTS[c.product].name : null, unit: c ? G.PRODUCTS[c.product].unit : null,
-      yieldEst: r2(est), yieldTotal: r2(est * p.area), valueEst: c ? Math.round(est * p.area * (G.market ? G.market.price(c.product) : G.PRODUCTS[c.product].base)) : 0,
+      yieldEst: r2(est), yieldTotal: r2(est * p.area), valueEst: 0, grade: null,
       yieldBase: c ? c.yieldBase : null, daysToHarvest: null, ripeDays: f.phase === 'ripe' ? f.ripeDays : null, window: c ? c.window : null,
       n: Math.round(f.n), p: Math.round(f.p), k: Math.round(f.k), ph: r2(f.ph), phPending: r2(f.phPend), phOpt: c ? c.phOpt : 6.5,
       nNeed: c ? c.nNeed : 0, pNeed: c ? c.pNeed : 0, kNeed: c ? c.kNeed : 0,
@@ -1004,11 +1078,19 @@
       protection: Object.keys(f.prot || {}).filter(k => f.prot[k] > d.dayIndex).map(k => ({ product: k, days: f.prot[k] - d.dayIndex })),
       work: f.work ? { op: f.work.op, name: F.OPS[f.work.op].name, done: f.work.count, total: p.tiles.length, pct: Math.round(f.work.count / p.tiles.length * 100) } : null,
       npcTask: f.npc && f.npc.task ? F.OPS[f.npc.task.op].name : null,
-      history: (f.history || []).slice(0, 5).map(h => ({ crop: h.crop, cropName: G.CROPS[h.crop] ? G.CROPS[h.crop].name : h.crop, year: h.year, yield: h.yield })),
+      history: (f.history || []).slice(0, 5).map(h => ({ crop: h.crop, cropName: G.CROPS[h.crop] ? G.CROPS[h.crop].name : h.crop, year: h.year, yield: h.yield, grade: h.grade || null, gradeLabel: h.gradeLabel || null })),
       factors: [], warnings: [], next: [],
       // straty potencjału plonu wg przyczyny: [{ cause, pct }] (np. susza 12%, chwasty 5%)
       losses: Object.keys(f.loss || {}).map(k => ({ cause: k, pct: Math.round((1 - Math.exp(-f.loss[k])) * 100) })).filter(x => x.pct > 0).sort((a, b) => b.pct - a.pct)
     };
+    if (c) {
+      // przewidywana klasa jakości i wartość plonu po cenie dla tej klasy
+      const g = gradeOf(f, c);
+      s.grade = g;   // { q, grade, label, factor, text }
+      s.qualityText = (G.GRADES && G.GRADES[c.product] && G.GRADES[c.product].grades ? 'klasa: ' + g.label : 'jakość ' + Math.round(g.q * 100) + '%') + (g.text ? ' (' + g.text + ')' : '');
+      const pr = G.market && G.market.price ? G.market.price(c.product, g.q) : G.PRODUCTS[c.product].base * g.factor;
+      s.valueEst = Math.round(est * p.area * pr);
+    }
     if (c && !c.meadow && (f.phase === 'sown' || f.phase === 'growing')) s.daysToHarvest = G.weather.daysToGdd(c.tbase, d.dayIndex, c.gdd - f.gdd, 200);
     if (c && c.meadow && f.phase === 'grass') s.daysToHarvest = G.weather.daysToGdd(c.tbase, d.dayIndex, Math.max(0, (f.cuts === 0 ? c.gddFirst : c.gdd) - f.gdd), 100);
     if (c && (f.phase === 'sown' || f.phase === 'growing' || f.phase === 'ripe' || c.meadow)) {
@@ -1027,7 +1109,8 @@
     }
     const W = s.warnings;
     if (f.ph < 5.5) W.push('Gleba kwaśna (pH ' + G.fmtNum(f.ph, 1) + ') — wapnowanie');
-    if (c && !c.meadow && s.nRatio != null && s.nRatio < 0.7 && f.growth < 0.7) W.push('Niedobór azotu — plon niższy o ~' + Math.round((1 - (0.35 + 0.65 * Math.pow(s.nRatio, 0.7))) * 100) + '%');
+    if (c && !c.meadow && s.nRatio != null && s.nRatio < 0.7 && f.growth < 0.7) W.push('Niedobór azotu — plon niższy o ~' + Math.round((1 - F.nFactor(s.nRatio)) * 100) + '%');
+    if (s.grade && c && !c.meadow && G.GRADES && G.GRADES[c.product] && G.GRADES[c.product].grades && s.grade.factor < G.GRADES[c.product].grades[0].factor) W.push('Jakość: ' + s.grade.label + (s.grade.text ? ' — ' + s.grade.text : ''));
     if (f.p < 40) W.push('Niska zasobność w fosfor'); if (f.k < 60) W.push('Niska zasobność w potas');
     if (f.weeds > 0.35 && c && !c.meadow) W.push('Silne zachwaszczenie');
     if (f.disease > 0.3) W.push('Choroby grzybowe'); if (f.pests > 0.3) W.push('Szkodniki');
