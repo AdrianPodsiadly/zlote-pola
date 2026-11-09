@@ -2,7 +2,12 @@
 //
 // Stan: G.S.machines = [{ uid, id, rented, until (tick końca wynajmu), wear 0..1, hours (motogodziny), busy: jobUid|null,
 //                         year (rocznik), broken (awaria), repairUntil (tick końca naprawy | 0), stored (pod dachem),
-//                         fill: { produkt: t } (ładunek przyczepy — pełna przyczepa na podwórzu to magazyn tymczasowy) }]
+//                         fill: { produkt: t } (ładunek przyczepy — pełna przyczepa na podwórzu to magazyn tymczasowy),
+//                         FLOTA (trwałe pozycje): x, y (kafel ułamkowy), angle (rad, 0 = +x), attachedTo (uid ciągnika/kombajnu | null),
+//                         hitch: [uid...] (ciągnik: narzędzie ALBO do 2 przyczep; kombajn: heder), lowered (narzędzie opuszczone),
+//                         driver (uid pracownika | null), order (bieżący rozkaz | null), parked: 'garage'|'yard'|'field',
+//                         fuel (l w zbiorniku) }]
+// Odczepione narzędzia i przyczepy STOJĄ tam, gdzie je zostawiono (vehicles() zwraca je jako kind: 'implement').
 //       G.S.machineMarket = { offers: [{ oid, id, year, wear, hours, price }], next: tick odświeżenia }
 // Paliwo: produkt 'ON' (G.PRODUCTS — data/machines.js). Maszyny tankują z magazynu (G.inv.take('ON')),
 //         a gdy brak — tankują na stacji drożej (G.finance.spend(..., 'paliwo')).
@@ -58,6 +63,7 @@
     if (m.busy) return { ok: false, reason: 'Maszyna pracuje w zleceniu' };
     if (M.fillOf(m) > 1e-6) return { ok: false, reason: 'Na przyczepie leży plon (magazyn tymczasowy) — najpierw sprzedaj albo zmagazynuj' };
     const price = M.sellQuote(uid);
+    M.dropAll(m);
     G.S.machines = G.S.machines.filter(x => x !== m);
     G.finance.earn(price, 'sprzedaż', 'Sprzedaż: ' + d.name);
     G.notify('💰 Sprzedano ' + d.name + ' za ' + G.fmtMoney(price), 'money');
@@ -67,14 +73,20 @@
   // ---------- zakup ----------
   function add(id, o) {
     const d = G.MACHINES[id];
-    const m = Object.assign({ uid: G.uid(), id, rented: false, until: 0, wear: 0, hours: 0, busy: null, year: year(), broken: false, repairUntil: 0, stored: true }, o || {});
+    const m = Object.assign({ uid: G.uid(), id, rented: false, until: 0, wear: 0, hours: 0, busy: null, year: year(), broken: false, repairUntil: 0, stored: true,
+      fill: null, x: null, y: null, angle: Math.PI / 2, attachedTo: null, hitch: [], lowered: false, driver: null, order: null, parked: 'yard', fuel: 0 }, o || {});
+    delete m.noHeader;
     G.S.machines.push(m);
+    m.fuel = M.tankOf(d);
+    M.park(m.uid);
     if (d.header && !o?.noHeader) {
-      // kombajn z hederem w zestawie (ta sama forma: zakup/wynajem/używany)
-      add(d.header, { rented: m.rented, until: m.until, wear: m.wear * 0.8, hours: Math.round(m.hours * 0.8), year: m.year, bundled: m.uid, noHeader: true });
+      // kombajn z hederem w zestawie (ta sama forma: zakup/wynajem/używany) — heder od razu podpięty
+      const h = add(d.header, { rented: m.rented, until: m.until, wear: m.wear * 0.8, hours: Math.round(m.hours * 0.8), year: m.year, bundled: m.uid, noHeader: true });
+      M.attach(m.uid, h.uid, { force: true });
     }
     return m;
   }
+  M.add = add;
   M.buy = function (id) {
     const d = G.MACHINES[id];
     if (!d) return { ok: false, reason: 'Nieznana maszyna' };
@@ -150,6 +162,7 @@
     const m = M.get(uid);
     if (!m || !m.rented) return { ok: false, reason: 'To nie jest maszyna wynajęta' };
     if (m.busy || G.S.machines.some(x => x.bundled === m.uid && x.busy)) return { ok: false, reason: 'Maszyna pracuje w zleceniu' };
+    M.dropAll(m);
     G.S.machines = G.S.machines.filter(x => x !== m && x.bundled !== m.uid);
     G.notify('🔑 Zwrócono ' + def(m).name, 'info');
     return { ok: true };
@@ -197,7 +210,10 @@
     if (m.repairUntil > G.S.tick) return 'w naprawie';
     if (m.broken) return 'awaria';
     if (m.busy) return 'w pracy';
-    return m.stored ? 'w garażu' : 'pod chmurką';
+    if (m.order) return 'wykonuje rozkaz';
+    if (G.drive && G.drive.active && G.drive.active() === uid) return 'prowadzisz';
+    if (m.attachedTo) { const t = M.get(m.attachedTo); return 'doczepiona do: ' + (t ? def(t).name : '?'); }
+    return m.parked === 'garage' ? 'w garażu' : m.parked === 'field' ? 'stoi na polu' : 'na podwórzu';
   };
 
   // ---------- eksploatacja (wołane przez prace) ----------
@@ -296,12 +312,183 @@
   }
   M.syncYardStorage = syncYardStorage;
 
+  // ===================== FLOTA: pozycje, zaczepy, parkowanie =====================
+  const HITCH_RANGE = 1.7;        // z jakiej odległości (kafle) da się podczepić narzędzie
+  M.HITCH_RANGE = HITCH_RANGE;
+  M.HITCH_H = 0.08;               // postój na podczepienie (h gry)
+  M.tankOf = d => d && d.fuelLph ? (d.tank || Math.round(((d.hp || 80) * (d.self ? 2.6 : 2.2)) / 10) * 10) : 0;
+  M.isImplement = d => !!d && !M.isPower(d);
+  const posOf = m => ({ x: m.x, y: m.y, angle: m.angle });
+  M.pos = uid => { const m = M.get(uid); return m ? posOf(m) : null; };
+  M.tileOf = m => G.idx(Math.max(0, Math.min(C.W - 1, Math.floor(m.x))), Math.max(0, Math.min(C.H - 1, Math.floor(m.y))));
+  // kolejność zaczepu: [narzędzie] albo [przyczepa1, przyczepa2]
+  M.hitched = uid => { const m = M.get(uid); return m && Array.isArray(m.hitch) ? m.hitch.map(u => M.get(u)).filter(Boolean) : []; };
+  M.chain = uid => { const m = M.get(uid); return m ? [m].concat(M.hitched(uid)) : []; };
+  M.rootOf = m => (m && m.attachedTo && M.get(m.attachedTo)) || m;
+  M.isManual = uid => !!(G.drive && G.drive.active && G.drive.active() === uid);
+
+  // czy ciągnik t może podczepić maszynę i (bez sprawdzania odległości); force — wołane przez prace (pomija zajętość)
+  M.canAttach = function (tUid, iUid, opts) {
+    opts = opts || {};
+    const t = M.get(tUid), i = M.get(iUid), td = def(t), id = def(i);
+    if (!t || !i || !td || !id) return { ok: false, reason: 'Brak maszyny' };
+    if (!M.isPower(td)) return { ok: false, reason: td.name + ' nie ma zaczepu' };
+    if (M.isPower(id)) return { ok: false, reason: id.name + ' jeździ sama' };
+    if (i.attachedTo === t.uid) return { ok: false, reason: 'Już doczepiona' };
+    if (i.attachedTo) { const o = M.get(i.attachedTo); if (o && (o.busy || M.isManual(o.uid)) && !opts.force) return { ok: false, reason: id.name + ' jest doczepiona do pracującego ciągnika' }; }
+    if (!opts.force && (i.busy || t.busy)) return { ok: false, reason: 'Maszyna pracuje w zleceniu' };
+    if (id.cat === 'header') {
+      if (td.cat !== 'combine' || td.needs !== 'header') return { ok: false, reason: 'Heder pasuje tylko do kombajnu' };
+      if (t.hitch.length) return { ok: false, reason: 'Kombajn ma już heder' };
+      if ((id.reqHp || 0) > td.hp) return { ok: false, reason: 'Heder za ciężki dla tego kombajnu' };
+      return { ok: true };
+    }
+    if (td.cat !== 'tractor') return { ok: false, reason: td.name + ' nie ciągnie narzędzi' };
+    const cur = M.hitched(t.uid);
+    if (id.cat === 'trailer') {
+      if (cur.some(m => def(m).cat !== 'trailer')) return { ok: false, reason: 'Najpierw odczep narzędzie' };
+      if (cur.length >= 2) return { ok: false, reason: 'Ciągnik może ciągnąć najwyżej 2 przyczepy' };
+      if (cur.length === 1) {
+        const po = G.trailerPairOk(def(cur[0]), id);
+        if (!po.ok) return po;
+        if (po.reqHp > td.hp) return { ok: false, reason: 'Za mała moc do dwóch przyczep: ' + td.hp + ' KM, potrzeba ' + po.reqHp + ' KM' };
+        return { ok: true };
+      }
+      if ((id.reqHp || 0) > td.hp) return { ok: false, reason: 'Za mała moc: ' + td.hp + ' KM, ' + id.name + ' wymaga ' + id.reqHp + ' KM' };
+      return { ok: true };
+    }
+    if (cur.length) return { ok: false, reason: 'Ciągnik ma już coś na zaczepie — najpierw odczep' };
+    if ((id.reqHp || 0) > td.hp) return { ok: false, reason: 'Za mała moc: ' + td.hp + ' KM, ' + id.name + ' wymaga ' + id.reqHp + ' KM' };
+    return { ok: true };
+  };
+  M.inHitchRange = (t, i) => Math.hypot(t.x - i.x, t.y - i.y) <= HITCH_RANGE;
+  // podczepienie (pozycja narzędzia = pozycja ciągnika; grafika rozkłada parts wzdłuż osi)
+  M.attach = function (tUid, iUid, opts) {
+    const c = M.canAttach(tUid, iUid, opts);
+    if (!c.ok) return c;
+    const t = M.get(tUid), i = M.get(iUid);
+    if (!(opts && opts.force) && !M.inHitchRange(t, i)) return { ok: false, reason: 'Za daleko — podjedź do ' + def(i).name };
+    if (i.attachedTo) M.detach(i.attachedTo, i.uid, { force: true, silent: true });
+    i.attachedTo = t.uid; t.hitch.push(i.uid);
+    i.x = t.x; i.y = t.y; i.angle = t.angle; i.parked = t.parked; i.lowered = false; i.order = null;
+    return { ok: true };
+  };
+  // odczepienie ostatniej (albo wskazanej, jeśli jest ostatnia) maszyny z zaczepu — zostaje za ciągnikiem
+  M.detach = function (tUid, iUid, opts) {
+    opts = opts || {};
+    const t = M.get(tUid);
+    if (!t || !t.hitch.length) return { ok: false, reason: 'Nic nie jest doczepione' };
+    const last = t.hitch[t.hitch.length - 1];
+    if (iUid != null && iUid !== last) return { ok: false, reason: 'Najpierw odczep ostatnią przyczepę' };
+    const i = M.get(last);
+    if (!opts.force && (t.busy || (i && i.busy))) return { ok: false, reason: 'Maszyna pracuje w zleceniu' };
+    if (i && def(i).cat === 'header' && !opts.force) return { ok: false, reason: 'Heder zostaje na kombajnie' };
+    t.hitch.pop();
+    if (!i) return { ok: true };
+    const k = t.hitch.length;   // ile zostaje przed odczepianą
+    const back = 0.55 + 0.6 * k;
+    i.attachedTo = null;
+    i.x = t.x - Math.cos(t.angle) * back; i.y = t.y - Math.sin(t.angle) * back; i.angle = t.angle;
+    i.x = Math.max(0.5, Math.min(C.W - 0.5, i.x)); i.y = Math.max(0.5, Math.min(C.H - 0.5, i.y));
+    i.lowered = false; i.parked = M.placeOf(i);
+    return { ok: true, uid: i.uid };
+  };
+  // odczep wszystko w miejscu (sprzedaż/zwrot ciągnika; zmiana zestawu przed pracą)
+  M.dropAll = function (m) {
+    if (!m) return;
+    if (m.attachedTo) { const t = M.get(m.attachedTo); if (t) t.hitch = t.hitch.filter(u => u !== m.uid); m.attachedTo = null; }
+    while (m.hitch && m.hitch.length) M.detach(m.uid, null, { force: true, silent: true });
+  };
+  // gdzie stoi maszyna
+  M.placeOf = function (m) {
+    if (m.x == null) return 'yard';
+    const i = M.tileOf(m);
+    if (G.S.map.t[i] !== G.T.YARD) return 'field';
+    for (const sp of spots()) if (Math.hypot(sp.x - m.x, sp.y - m.y) < 0.6) return 'garage';
+    return 'yard';
+  };
+  function spots() {
+    if (G.buildings && G.buildings.machineSpots) { try { return G.buildings.machineSpots() || []; } catch (e) { /* brak */ } }
+    return [];
+  }
+  const slotSize = d => d.cat === 'combine' || d.cat === 'forage_harvester' || d.cat === 'beet_harvester' ? 2 : M.isPower(d) || d.cat === 'trailer' ? 1 : 0.5;
+  // kto zajmuje miejsce (maszyny stojące, nieprzyczepione, w promieniu 0,6 kafla)
+  function occupantsAt(x, y, exceptUid) {
+    return M.list().filter(m => m.uid !== exceptUid && !m.attachedTo && m.x != null && !m.busy && !m.order && Math.hypot(m.x - x, m.y - y) < 0.6);
+  }
+  // wolne miejsce postojowe: garaż (jeśli maszyna ma być pod dachem i jest miejsce), potem wolny kafel podwórza, na końcu środek podwórza
+  M.spotFor = function (m) {
+    const d = def(m), size = slotSize(d);
+    const ex = G.jobs && G.jobs.yardExit ? G.jobs.yardExit() : -1;
+    if (m.stored !== false) {
+      for (const sp of spots()) {
+        const occ = occupantsAt(sp.x, sp.y, m.uid);
+        const used = occ.reduce((a, o) => a + slotSize(def(o)), 0);
+        if (used + size <= 1.0001) return { x: sp.x + (occ.length ? 0.3 : 0), y: sp.y, angle: Math.PI / 2, covered: true, buildingUid: sp.buildingUid };
+      }
+    }
+    const Y = G.S.farm.yard, cand = [];
+    for (let ty = Y.y + Y.h - 1; ty >= Y.y; ty--) for (let tx = Y.x + Y.w - 1; tx >= Y.x; tx--) {
+      const i = G.idx(tx, ty);
+      if (G.S.map.t[i] !== G.T.YARD || i === ex) continue;
+      if (G.buildings && G.buildings.at && G.buildings.at(i)) continue;
+      if (spots().some(sp => Math.floor(sp.x) === tx && Math.floor(sp.y) === ty)) continue;
+      const occ = occupantsAt(tx + 0.5, ty + 0.5, m.uid);
+      const used = occ.reduce((a, o) => a + slotSize(def(o)), 0);
+      if (used + size <= 1.0001) cand.push({ x: tx + 0.5 + (occ.length ? 0.3 : 0), y: ty + 0.5, angle: Math.PI / 2, covered: false, buildingUid: null, used });
+    }
+    if (cand.length) { cand.sort((a, b) => a.used - b.used); return cand[0]; }
+    return { x: Y.x + Y.w / 2, y: Y.y + Y.h / 2, angle: Math.PI / 2, covered: false, buildingUid: null };
+  };
+  // ustawia maszynę (teleport) na wolnym miejscu postojowym — nowy zakup, migracja zapisu, odstawienie po pracy
+  M.park = function (uid) {
+    const m = M.get(uid);
+    if (!m || m.attachedTo) return false;
+    const sp = M.spotFor(m);
+    m.x = sp.x; m.y = sp.y; m.angle = sp.angle; m.parked = sp.covered ? 'garage' : 'yard'; m.lowered = false;
+    for (const h of M.hitched(uid)) { h.x = m.x; h.y = m.y; h.angle = m.angle; h.parked = m.parked; }
+    return true;
+  };
+  // pozycja całego zestawu (ciągnik + zaczep) — wołane przez prace/rozkazy/jazdę co klatkę
+  M.setPos = function (uid, x, y, angle, moving) {
+    const m = M.get(uid);
+    if (!m) return;
+    m.x = x; m.y = y; if (angle != null) m.angle = angle;
+    if (moving) m.parked = null; else m.parked = M.placeOf(m);
+    for (const h of M.hitched(uid)) { h.x = m.x; h.y = m.y; h.angle = m.angle; h.parked = m.parked; }
+  };
+  // maszyna najbliżej punktu (kafel ułamkowy) w promieniu r; doczepione wskazują na ciągnik (opts.any — dokładnie trafiona)
+  M.at = function (x, y, r, opts) {
+    r = r == null ? 0.8 : r;
+    let best = null, bd = 1e9;
+    for (const m of M.list()) {
+      if (m.x == null) continue;
+      const d = Math.hypot(m.x - x, m.y - y);
+      if (d <= r && d < bd) { bd = d; best = m; }
+    }
+    if (!best) return null;
+    return (opts && opts.any) ? best : M.rootOf(best);
+  };
+  // wyposażenie zestawu: { power, implement (narzędzie robocze | heder), trailers: [m], op (zabieg narzędzia | null) }
+  M.rig = function (uid) {
+    const m = M.get(uid), root = M.rootOf(m);
+    if (!root) return null;
+    const rd = def(root), hs = M.hitched(root.uid);
+    const trailers = hs.filter(h => def(h).cat === 'trailer');
+    let impl = hs.find(h => def(h).cat !== 'trailer') || null;
+    const wd = impl ? def(impl) : null;
+    let ops = [];
+    if (rd.self && rd.ops && rd.ops.length) ops = rd.ops.slice();
+    else if (wd) ops = (wd.ops || []).filter(o => o !== 'transport');
+    if (rd.self && rd.needs === 'header' && !impl) ops = [];
+    return { power: root, implement: impl, trailers, ops, cap: trailers.reduce((a, t) => a + (def(t).cap || 0), 0), width: (wd && wd.width) || rd.width || 0 };
+  };
+
   // ---------- garaż ----------
   M.slots = function () {
     if (G.buildings && G.buildings.machineSlots) { const s = +G.buildings.machineSlots(); if (s >= 0) return s; }
     return 3;  // garaż po dziadku
   };
-  const slotSize = d => d.cat === 'combine' || d.cat === 'forage_harvester' || d.cat === 'beet_harvester' ? 2 : M.isPower(d) || d.cat === 'trailer' ? 1 : 0.5;
   M.slotsUsed = () => M.list().filter(m => !m.rented).reduce((a, m) => a + slotSize(def(m)), 0);
   // rozmieszczenie: najcenniejsze pod dachem
   function restow() {
@@ -408,6 +595,7 @@
         for (const x of S.machines) if (x.bundled === m.uid) x.until = m.until;
         G.notify('🔑 ' + d.name + ' pracuje — wynajem przedłużony o dobę', 'warn', { key: 'rentx_' + m.uid });
       } else {
+        M.dropAll(m);
         S.machines = S.machines.filter(x => x !== m && x.bundled !== m.uid);
         G.notify('🔑 Koniec wynajmu — ' + d.name + ' wraca do wypożyczalni', 'info');
       }
@@ -442,8 +630,27 @@
       if (!m.year) m.year = G.date().year;
       m.broken = !!m.broken; m.repairUntil = +m.repairUntil || 0; m.rented = !!m.rented; m.until = +m.until || 0;
       if (m.fill && typeof m.fill === 'object') { for (const k in m.fill) if (!(m.fill[k] > 0)) delete m.fill[k]; if (!Object.keys(m.fill).length) m.fill = null; } else m.fill = null;
+      // flota — stare zapisy nie mają pozycji ani zaczepów
+      if (!Array.isArray(m.hitch)) m.hitch = [];
+      if (m.attachedTo === undefined) m.attachedTo = null;
+      m.lowered = !!m.lowered;
+      if (m.driver === undefined) m.driver = null;
+      if (m.order === undefined || (m.order && typeof m.order !== 'object')) m.order = null;
+      if (m.angle == null || !isFinite(m.angle)) m.angle = Math.PI / 2;
+      if (!(m.fuel >= 0)) m.fuel = M.tankOf(def(m));
     }
+    const uids = new Set(S.machines.map(m => m.uid));
+    for (const m of S.machines) {
+      m.hitch = m.hitch.filter(u => uids.has(u) && u !== m.uid);
+      if (m.attachedTo != null && (!uids.has(m.attachedTo) || !M.get(m.attachedTo).hitch.includes(m.uid))) m.attachedTo = null;
+      if (m.driver != null && !(G.S.workers || []).some(w => w.uid === m.driver)) m.driver = null;
+    }
+    // heder zawsze na swoim kombajnie
+    for (const m of S.machines) if (m.bundled && uids.has(m.bundled) && !m.attachedTo) { const c = M.get(m.bundled); if (c && !c.hitch.length) M.attach(c.uid, m.uid, { force: true }); }
     if (!S.machineMarket || !Array.isArray(S.machineMarket.offers)) refreshUsed();
     restow();
+    // pozycje: brak → ustaw w garażu / na podwórzu (najpierw maszyny napędowe, potem luzem stojące narzędzia)
+    for (const m of S.machines) if (!m.attachedTo && (m.x == null || m.y == null || !isFinite(m.x) || !isFinite(m.y) || !G.inMap(Math.floor(m.x), Math.floor(m.y)))) M.park(m.uid);
+    for (const m of S.machines) { if (m.attachedTo) { const t = M.get(m.attachedTo); m.x = t.x; m.y = t.y; m.angle = t.angle; } if (!m.parked || m.parked === null) m.parked = M.placeOf(m); }
   });
 })();
