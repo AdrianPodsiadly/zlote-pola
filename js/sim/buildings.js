@@ -225,26 +225,41 @@
     capCache = c; capRev = rev;
     return c;
   }
+  // tymczasowe miejsce (np. przyczepy z ziarnem zostawione na podwórzu) — dostarcza moduł maszyn: G.machines.yardStorage(pula) → ilość
+  function extra(key) {
+    if (!(G.machines && typeof G.machines.yardStorage === 'function')) return 0;
+    try { const v = +G.machines.yardStorage(key); return v > 0 ? v : 0; } catch (e) { return 0; }
+  }
+  const capOf = key => caps()[key].cap + extra(key);
+  const coveredOf = key => caps()[key].covered + extra(key);
+  // ilość produktu j liczona w puli key (pasza treściwa w pierwszej kolejności trafia do zbiorników paszowych)
+  function inPool(j, key) {
+    const q = G.S.inv[j] || 0;
+    if (j !== 'pasza_tresciwa') return poolOf(j) === key ? q : 0;
+    const bins = caps().pasza.cap;
+    if (key === 'pasza') return Math.min(q, bins);
+    if (key === 'zboże') return Math.max(0, q - bins);
+    return 0;
+  }
   function poolUsed(key, exceptId) {
     let u = 0;
-    const inv = G.S.inv;
-    for (const j in inv) if (j !== exceptId && poolOf(j) === key) u += inv[j] * unitF(j, key);
+    for (const j in G.S.inv) if (j !== exceptId) { const q = inPool(j, key); if (q > 0) u += q * unitF(j, key); }
     return u;
   }
   G.inv.capacityFn = function (id) {
     if (!G.S || !G.S.buildings) return Infinity;
+    if (id === 'pasza_tresciwa') return caps().pasza.cap + Math.max(0, capOf('zboże') - poolUsed('zboże', id));
     const key = poolOf(id);
     if (!key) return Infinity;
-    const c = caps()[key];
-    return Math.max(0, c.cap - poolUsed(key, id)) / unitF(id, key);
+    return Math.max(0, capOf(key) - poolUsed(key, id)) / unitF(id, key);
   };
   // dla UI: stan wszystkich pul magazynowych
   BL.storage = function () {
     const P = POOLS(), c = caps(), out = [];
     for (const k in P) {
       const items = [];
-      for (const j in G.S.inv) if (poolOf(j) === k && G.S.inv[j] > 0) items.push({ id: j, qty: G.S.inv[j] });
-      out.push({ key: k, name: P[k].name, unit: P[k].unit, used: Math.round(poolUsed(k) * 100) / 100, cap: c[k].cap, covered: c[k].covered,
+      for (const j in G.S.inv) { const q = inPool(j, k); if (q > 0) items.push({ id: j, qty: Math.round(q * 1000) / 1000 }); }
+      out.push({ key: k, name: P[k].name, unit: P[k].unit, used: Math.round(poolUsed(k) * 100) / 100, cap: capOf(k), covered: coveredOf(k), temp: extra(k),
         base: P[k].base, baseNote: P[k].baseNote || '', items });
     }
     return out;
@@ -314,6 +329,54 @@
     return h;
   };
 
+  // ---------- punkt rozładunku (dla modułu prac) ----------
+  // unloadPoint(productId, from?: {x,y}) → { x, y (środek kafla podwórza przy budynku), buildingUid, free (ile jeszcze się zmieści) }
+  // Najbliższy ukończony budynek z wolnym miejscem na produkt; pasza treściwa najpierw do zbiorników paszowych.
+  // Gdy żaden budynek nie ma miejsca, a pojemność bazowa (pod plandeką / pryzma) tak — punkt na środku podwórza, buildingUid: null.
+  // null = brak miejsca w ogóle (trzeba sprzedać prosto z pola albo zostawić ziarno na przyczepie).
+  BL.unloadPoint = function (id, from) {
+    if (!G.S || !G.S.farm) return null;
+    const free = G.inv.free(id);
+    if (!(free > 0)) return null;
+    const key = poolOf(id), Y = G.S.farm.yard;
+    from = from || { x: Y.x + Y.w / 2, y: Y.y + Y.h / 2 };
+    const keys = id === 'pasza_tresciwa' ? ['pasza', 'zboże'] : (key ? [key] : []);
+    for (const k of keys) {
+      let best = null, bd = 1e9;
+      for (const b of list()) {
+        if (!done(b)) continue;
+        const cap = (BL.def(b).capacity || {})[k];
+        if (!(cap > 0)) continue;
+        if (k === 'pasza' && !(caps().pasza.cap - poolUsed('pasza') > 0.01)) continue;
+        // stodoła/dom/obora tylko awaryjnie — ziarno najpierw do silosów i magazynu płaskiego
+        const pen = (b.type === 'barn' || b.type === 'house' || b.type === 'garage') ? 40 : 0;
+        const f = BL.footprint(b), cx = f.x + f.w / 2, cy = f.y + f.h / 2, dd = Math.hypot(cx - from.x, cy - from.y) + pen;
+        if (dd < bd) { bd = dd; best = b; }
+      }
+      if (best) {
+        // wolny kafel podwórza przy budynku (do podjazdu); jeśli brak — krawędź budynku
+        const f = BL.footprint(best);
+        let pt = null, pd = 1e9;
+        for (const t of BL.penTiles(best.uid)) {
+          if (t.edge) continue;
+          const dd = Math.hypot(t.x + 0.5 - from.x, t.y + 0.5 - from.y);
+          if (dd < pd) { pd = dd; pt = { x: t.x + 0.5, y: t.y + 0.5 }; }
+        }
+        if (!pt) pt = { x: f.x + f.w / 2, y: f.y + f.h };
+        return { x: pt.x, y: pt.y, buildingUid: best.uid, free };
+      }
+    }
+    if (!key && id !== 'pasza_tresciwa') return { x: Y.x + Y.w / 2, y: Y.y + Y.h / 2, buildingUid: null, free };
+    // tylko pojemność bazowa: wolny kafel podwórza najbliżej środka
+    let pt = { x: Y.x + Y.w / 2, y: Y.y + Y.h / 2 }, pd = 1e9;
+    for (let y = Y.y; y < Y.y + Y.h; y++) for (let x = Y.x; x < Y.x + Y.w; x++) {
+      if (!G.inMap(x, y) || !BL.isFree(G.idx(x, y))) continue;
+      const dd = Math.hypot(x + 0.5 - (Y.x + Y.w / 2), y + 0.5 - (Y.y + Y.h / 2));
+      if (dd < pd) { pd = dd; pt = { x: x + 0.5, y: y + 0.5 }; }
+    }
+    return { x: pt.x, y: pt.y, buildingUid: null, free, open: true };
+  };
+
   // ---------- informacje dla UI ----------
   BL.info = function (uid) {
     const b = BL.get(uid);
@@ -329,7 +392,7 @@
     if (d.kW) fx.push(d.kW + ' kW mocy elektrycznej');
     if (d.yieldYear) fx.push('ok. ' + G.fmtNum(d.yieldYear / 1000, 1) + ' t warzyw/rok');
     return {
-      uid, type: b.type, name: T.name, levelName: d.name, level: b.level, maxLevel: T.levels.length, desc: d.desc || T.desc,
+      uid, type: b.type, variant: T.variant || null, name: T.name, levelName: d.name, level: b.level, maxLevel: T.levels.length, desc: d.desc || T.desc,
       building: !done(b), progress: b.progress, upgrading: b.upg != null, upgProgress: b.upg || 0,
       daysLeft: !done(b) ? Math.ceil((1 - b.progress) * T.buildDays) : (b.upg != null ? Math.ceil((1 - b.upg) * next.buildDays) : 0),
       upkeep: d.upkeep, capacity: d.capacity, houses: d.houses, effects: fx,
@@ -345,8 +408,9 @@
       if (T.max && BL.count(type) >= T.max) reason = 'Już masz';
       else if (T.req && !T.req.some(r => BL.has(r))) reason = 'Wymaga: ' + T.req.map(r => G.BUILDINGS[r].name).join(' lub ');
       else if (!G.finance.canAfford(T.price)) reason = 'Za mało pieniędzy';
-      return { type, name: T.name, cat: T.cat, price: T.price, buildDays: T.buildDays, size: T.size, model: T.model, color: T.color, desc: T.desc,
-        upkeep: T.upkeep, owned: BL.count(type), available: !reason, reason, levels: T.levels.map(L => ({ name: L.name, price: L.price, days: L.buildDays, desc: L.desc })) };
+      return { type, variant: T.variant || null, name: T.name, cat: T.cat, price: T.price, buildDays: T.buildDays, size: T.size, model: T.model, color: T.color, desc: T.desc,
+        upkeep: T.upkeep, owned: BL.count(type), available: !reason, reason,
+        levels: T.levels.map(L => ({ name: L.name, price: L.price, total: L.cumPrice, days: L.buildDays, capacity: L.capacity, houses: L.houses, slots: L.slots || 0, desc: L.desc })) };
     });
   };
   BL.opts = () => G.S.bmeta.opts;
@@ -393,13 +457,14 @@
     for (const k in P) {
       const pl = P[k];
       if (!pl.loss) continue;
-      const used = poolUsed(k), excess = used - c[k].covered;
+      const used = poolUsed(k), excess = used - coveredOf(k);
       if (excess <= 0.001) continue;
       const lost = excess * (pl.loss + (rain ? (pl.rainLoss || 0) : 0));
       if (lost <= 0) continue;
       for (const j in S.inv) {
-        if (poolOf(j) !== k || !(S.inv[j] > 0)) continue;
-        const f = unitF(j, k), share = S.inv[j] * f / used;
+        const q = inPool(j, k);
+        if (!(q > 0)) continue;
+        const f = unitF(j, k), share = q * f / used;
         G.inv.take(j, Math.min(S.inv[j], Math.round(lost * share / f * 1000) / 1000));
       }
       S.bmeta.losses[k] = (S.bmeta.losses[k] || 0) + lost;
@@ -514,6 +579,8 @@
   G.on('load', function () {
     const S = G.S;
     if (!Array.isArray(S.buildings)) S.buildings = [];
+    // zapis z wersji z jednym typem 'silo' (100/250/500 t) → silos lejowy 108/194/312 t
+    for (const b of S.buildings) if (b && b.type === 'silo') { b.type = 'silo_hopper'; b.level = [3, 4, 5][Math.max(0, Math.min(2, (b.level | 0) - 1))]; delete b.upg; }
     S.buildings = S.buildings.filter(b => b && G.BUILDINGS[b.type]);
     for (const b of S.buildings) {
       const T = G.BUILDINGS[b.type];
