@@ -15,6 +15,12 @@
 //   mode: 'grain'|'silage'|'root' — rodzaj zbioru (przekazywany do G.fields.workTile w params.mode)
 //   load: 0..1 — obciążenie silnika ciągnika przez narzędzie (spalanie = fuelLph ciągnika × load)
 //   life: motogodziny do pełnego zużycia (wear 1.0); usedOnly: tylko z rynku wtórnego (nie ma w salonie)
+//   PRZYCZEPY: axle: 'jednoosiowa' (3–8 t, bez tylnego zaczepu) | 'dwuosiowa' (przednia oś skrętna na obrotnicy, 4–18 t, tylny zaczep)
+//              | 'tandem' (8–20 t, tylny zaczep) | 'tridem' (20–30 t, tylko jako jedyna/ostatnia); cap ZAWSZE w tonach, m3 — objętość
+//              skrzyni (zboże 0,76 t/m³); rearHitch: czy można doczepić za nią drugą przyczepę (PL: zespół maks. 3 pojazdy, 22 m);
+//              reqHp rośnie z ładownością (6 t → 60, 10 t → 80, 14 t → 110, 20 t → 150, 30 t → 220 KM); hitchLen — długość (kafle) do rysowania.
+//   KOMBAJNY: tankL — zbiornik ziarna (l), cap — to samo w tonach przy 0,76 t/m³, unloadLps — wydajność rury wyładowczej (l/s):
+//             stary ~4 400 l / 75 l/s, średni 8 000–9 000 l / 105, duży 11 000–12 500 l / 125, największy 14 500 l / 140.
 //
 // Wydajność w grze: ha/h = width × speed / 10 × 0,8 × współczynnik pracownika (0,88…1,2), nocą × 0,8.
 // Ceny: realia rynku PL 2025/26 (netto ≈ brutto dla rolnika ryczałtowca), wynajem — orientacyjne stawki wypożyczalni/sąsiedzkie bez operatora.
@@ -71,22 +77,28 @@
 
     // ===================== KOMBAJNY ZBOŻOWE (samojezdne, wymagają hedera) =====================
     klosownik_k45: {
-      name: 'Kłosownik K-45', brand: 'Kłosownik', cat: 'combine', ops: ['harvest'], self: true, hp: 180, speed: 5, cap: 5,
+      name: 'Kłosownik K-45', brand: 'Kłosownik', cat: 'combine', ops: ['harvest'], self: true, hp: 180, speed: 5, tankL: 4400, cap: 3.3, unloadLps: 75,
       needs: 'header', header: 'heder_45', crops: GRAIN.concat(['kukurydza', 'slonecznik']), mode: 'grain',
       price: 690000, rentPerDay: 4000, fuelLph: 28, model: 'combine', color: COL.klos, life: 6000,
-      desc: 'Mały kombajn dla gospodarstw do ~80 ha. Zbiornik 5 t. W zestawie heder zbożowy 4,5 m.'
+      desc: 'Mały, starszej konstrukcji kombajn dla gospodarstw do ~80 ha. Zbiornik 4 400 l (≈ 3,3 t), rura 75 l/s. W zestawie heder zbożowy 4,5 m.'
     },
     klosownik_k62: {
-      name: 'Kłosownik K-62 Plus', brand: 'Kłosownik', cat: 'combine', ops: ['harvest'], self: true, hp: 290, speed: 5.5, cap: 8,
+      name: 'Kłosownik K-62 Plus', brand: 'Kłosownik', cat: 'combine', ops: ['harvest'], self: true, hp: 290, speed: 5.5, tankL: 8500, cap: 6.5, unloadLps: 105,
       needs: 'header', header: 'heder_62', crops: GRAIN.concat(['kukurydza', 'slonecznik']), mode: 'grain',
       price: 1250000, rentPerDay: 6000, fuelLph: 40, model: 'combine', color: COL.klos, life: 6500,
-      desc: 'Średni kombajn z wytrząsaczami i zbiornikiem 8 t. W zestawie heder 6,2 m.'
+      desc: 'Średni kombajn z wytrząsaczami, zbiornik 8 500 l (≈ 6,5 t), rura 105 l/s. W zestawie heder 6,2 m.'
     },
     zniwiarz_x9: {
-      name: 'Żniwiarz X9 Rotor', brand: 'Żniwiarz', cat: 'combine', ops: ['harvest'], self: true, hp: 420, speed: 6, cap: 11,
+      name: 'Żniwiarz X9 Rotor', brand: 'Żniwiarz', cat: 'combine', ops: ['harvest'], self: true, hp: 420, speed: 6, tankL: 12000, cap: 9.1, unloadLps: 125,
       needs: 'header', header: 'heder_9', crops: GRAIN.concat(['kukurydza', 'slonecznik']), mode: 'grain',
       price: 2200000, rentPerDay: 9000, fuelLph: 55, model: 'combine', color: COL.zniw, life: 7000,
-      desc: 'Rotorowy olbrzym dla dużych areałów. Zbiornik 11 t, heder 9 m w zestawie.'
+      desc: 'Rotorowy olbrzym dla dużych areałów. Zbiornik 12 000 l (≈ 9,1 t), rura 125 l/s, heder 9 m w zestawie.'
+    },
+    zniwiarz_x12: {
+      name: 'Żniwiarz X12 Hybryda', brand: 'Żniwiarz', cat: 'combine', ops: ['harvest'], self: true, hp: 520, speed: 6.5, tankL: 14500, cap: 11, unloadLps: 140,
+      needs: 'header', header: 'heder_12', crops: GRAIN.concat(['kukurydza', 'slonecznik']), mode: 'grain',
+      price: 2950000, rentPerDay: 12000, fuelLph: 68, model: 'combine', color: COL.zniw, life: 7500,
+      desc: 'Największy kombajn w katalogu: zbiornik 14 500 l (≈ 11 t), rura 140 l/s, heder taśmowy 12 m. Dla gospodarstw powyżej 400 ha albo usługodawców.'
     },
     // hedery (zespoły żniwne)
     heder_45: {
@@ -100,6 +112,10 @@
     heder_9: {
       name: 'Heder taśmowy 9 m', brand: 'Żniwiarz', cat: 'header', ops: ['harvest'], reqHp: 380, width: 9, crops: GRAIN,
       price: 195000, rentPerDay: 0, model: 'header', color: COL.zniw, life: 5000, desc: 'Szeroki heder taśmowy — równy pokos przy dużej prędkości.'
+    },
+    heder_12: {
+      name: 'Heder taśmowy 12 m', brand: 'Żniwiarz', cat: 'header', ops: ['harvest'], reqHp: 460, width: 12, crops: GRAIN,
+      price: 260000, rentPerDay: 0, model: 'header', color: COL.zniw, life: 5000, desc: 'Heder taśmowy 12 m z własnym wózkiem transportowym.'
     },
     heder_kukurydza: {
       name: 'Przystawka do kukurydzy 6-rz.', brand: 'Kłosownik', cat: 'header', ops: ['harvest'], reqHp: 170, width: 4.5,
@@ -257,22 +273,49 @@
     },
 
     // ===================== TRANSPORT =====================
+    // (axle, cap w tonach, m3, rearHitch, reqHp wg ładowności — patrz nagłówek; ceny nowych PL 2025/26: 8 t ≈ 67 tys., 10 t ≈ 86 tys.,
+    //  14 t ≈ 108 tys., skorupowa 18 t / przeładowcze 24–30 t ≈ 200–275 tys.; używane taniej — rynek wtórny)
     przyczepa_4: {
-      name: 'Wiślak D-4 (stara)', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], reqHp: 35, cap: 4, load: 0.4,
+      name: 'Wiślak D-4 (stara)', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], axle: 'jednoosiowa', cap: 4, m3: 5.3, rearHitch: false, reqHp: 40, load: 0.4, hitchLen: 0.55,
       price: 14000, rentPerDay: 0, model: 'trailer', color: COL.wislak, life: 6000, year: 1982, usedOnly: true,
-      desc: 'Jednoosiowa wywrotka 4 t po dziadku. Burty łatane, ale wozi.'
+      desc: 'Jednoosiowa wywrotka 4 t po dziadku. Burty łatane, ale wozi. Bez tylnego zaczepu.'
     },
     przyczepa_6: {
-      name: 'Wiślak W-6', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], reqHp: 50, cap: 6, load: 0.4,
-      price: 29000, rentPerDay: 100, model: 'trailer', color: COL.wislak, life: 6000, desc: 'Przyczepa jednoosiowa 6 t, wywrot na 3 strony.'
+      name: 'Wiślak W-6', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], axle: 'jednoosiowa', cap: 6, m3: 7.9, rearHitch: false, reqHp: 60, load: 0.4, hitchLen: 0.6,
+      price: 46000, rentPerDay: 100, model: 'trailer', color: COL.wislak, life: 6000, desc: 'Przyczepa jednoosiowa 6 t, wywrot na 3 strony. Zwrotna, ale bez tylnego zaczepu.'
+    },
+    przyczepa_6d: {
+      name: 'Wiślak D-6 Obrotnica (stara)', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], axle: 'dwuosiowa', cap: 6, m3: 7.9, rearHitch: true, reqHp: 60, load: 0.4, hitchLen: 0.75,
+      price: 24000, rentPerDay: 0, model: 'trailer', color: COL.wislak, life: 6000, year: 1988, usedOnly: true,
+      desc: 'Dwuosiowa 6 t z przednią osią skrętną na obrotnicy — klasyka PGR-u. Ma tylny zaczep: można za nią doczepić drugą.'
+    },
+    przyczepa_8d: {
+      name: 'Wiślak D-8 Obrotnica', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], axle: 'dwuosiowa', cap: 8, m3: 10.5, rearHitch: true, reqHp: 70, load: 0.42, hitchLen: 0.8,
+      price: 67000, rentPerDay: 130, model: 'trailer', color: COL.wislak, life: 6000, desc: 'Dwuosiowa 8 t, obrotnica, nadstawki do zboża, tylny zaczep.'
     },
     przyczepa_10: {
-      name: 'Wiślak T-10 Tandem', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], reqHp: 80, cap: 10, load: 0.45,
-      price: 58000, rentPerDay: 160, model: 'trailer', color: COL.wislak, life: 6000, desc: 'Przyczepa tandem 10 t z nadstawkami do zboża.'
+      name: 'Wiślak T-10 Tandem', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], axle: 'tandem', cap: 10, m3: 13.2, rearHitch: true, reqHp: 80, load: 0.45, hitchLen: 0.8,
+      price: 86000, rentPerDay: 160, model: 'trailer', color: COL.wislak, life: 6000, desc: 'Przyczepa tandem 10 t z nadstawkami do zboża i tylnym zaczepem.'
+    },
+    przyczepa_12d: {
+      name: 'Wiślak D-12 Obrotnica', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], axle: 'dwuosiowa', cap: 12, m3: 15.8, rearHitch: true, reqHp: 95, load: 0.47, hitchLen: 0.9,
+      price: 98000, rentPerDay: 190, model: 'trailer', color: COL.wislak, life: 6500, desc: 'Dwuosiowa 12 t na obrotnicy — stabilna w zestawie z drugą przyczepą.'
     },
     przyczepa_14: {
-      name: 'Wiślak T-14 Objętość', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], reqHp: 110, cap: 14, load: 0.5,
-      price: 98000, rentPerDay: 230, model: 'trailer', color: COL.wislak, life: 6500, desc: 'Przyczepa tandem 14 t, burty 1,6 m — na żniwa i kiszonkę.'
+      name: 'Wiślak T-14 Objętość', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], axle: 'tandem', cap: 14, m3: 18.4, rearHitch: true, reqHp: 110, load: 0.5, hitchLen: 0.9,
+      price: 108000, rentPerDay: 230, model: 'trailer', color: COL.wislak, life: 6500, desc: 'Przyczepa tandem 14 t, burty 1,6 m — na żniwa i kiszonkę. Tylny zaczep.'
+    },
+    przyczepa_18: {
+      name: 'Wiślak S-18 Skorupa', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], axle: 'tandem', cap: 18, m3: 23.7, rearHitch: true, reqHp: 135, load: 0.55, hitchLen: 1.0,
+      price: 215000, rentPerDay: 350, model: 'trailer', color: COL.wislak, life: 7000, desc: 'Skorupowa 18 t, zawieszenie resorowe, hydrauliczny tylny zaczep.'
+    },
+    przeladowcza_24: {
+      name: 'Wiślak P-24 Przeładowcza', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], axle: 'tridem', cap: 24, m3: 31.6, rearHitch: false, reqHp: 178, load: 0.6, hitchLen: 1.1,
+      price: 240000, rentPerDay: 450, model: 'trailer', color: COL.wislak, life: 7000, desc: 'Wóz przeładowczy tridem 24 t ze ślimakiem — jeździ tylko jako jedyna przyczepa.'
+    },
+    przeladowcza_30: {
+      name: 'Wiślak P-30 Przeładowcza', brand: 'Wiślak', cat: 'trailer', ops: ['transport'], axle: 'tridem', cap: 30, m3: 39.5, rearHitch: false, reqHp: 220, load: 0.62, hitchLen: 1.2,
+      price: 275000, rentPerDay: 520, model: 'trailer', color: COL.wislak, life: 7000, desc: 'Wóz przeładowczy tridem 30 t — dla największych kombajnów. Tylko za ciągnikiem ≥ 220 KM.'
     },
     ladowarka: {
       name: 'Dźwigar T-735', brand: 'Dźwigar', cat: 'loader', ops: ['load'], self: true, hp: 120, cap: 3.5,
@@ -313,6 +356,26 @@
     }
   };
   for (const id in G.MACHINES) G.MACHINES[id].id = id;
+
+  // Gęstość zboża (t/m³) — przeliczenia zbiornika kombajnu i skrzyni przyczepy
+  G.GRAIN_T_PER_M3 = 0.76;
+  // Wymagana moc ciągnika dla przyczepy o ładowności cap (t): 6 → 60, 10 → 80, 14 → 110, 20 → 150, 30 → 220 KM (interpolacja)
+  G.trailerReqHp = function (cap) {
+    const pts = [[3, 40], [6, 60], [10, 80], [14, 110], [20, 150], [30, 220]];
+    if (cap <= pts[0][0]) return pts[0][1];
+    for (let k = 1; k < pts.length; k++) if (cap <= pts[k][0]) { const [a, b] = pts[k - 1], [c, d] = pts[k]; return Math.round(b + (d - b) * (cap - a) / (c - a)); }
+    return pts[pts.length - 1][1];
+  };
+  // Zestaw 2 przyczep: suma ładowności, reqHp ≈ (reqHp1 + reqHp2) × 0,8; pierwsza musi mieć tylny zaczep, tridem tylko jako ostatnia/jedyna
+  G.trailerPairOk = function (d1, d2) {
+    if (!d1 || !d2 || d1.cat !== 'trailer' || d2.cat !== 'trailer') return { ok: false, reason: 'To nie są przyczepy' };
+    if (!d1.rearHitch) return { ok: false, reason: d1.name + ' nie ma tylnego zaczepu' };
+    if (d1.axle === 'tridem') return { ok: false, reason: 'Przyczepa tridem może być tylko ostatnia' };
+    return { ok: true, cap: d1.cap + d2.cap, reqHp: Math.round(((d1.reqHp || 0) + (d2.reqHp || 0)) * 0.8) };
+  };
+  // Wydajność rury wyładowczej w t/h GRY: realnie unloadLps × 2,74 t/h (105 l/s ≈ 290 t/h, zbiornik 8,5 t w ~2 min); dla czytelności
+  // w grze skala ×0,21 → 75 l/s ≈ 43 t/h, 105 ≈ 60 t/h, 125 ≈ 71 t/h, 140 ≈ 80 t/h (widać stojący kombajn i rurę; dzień zmienia się o 2–4 %).
+  G.augerTph = function (d) { const lps = (d && d.unloadLps) || 105; return Math.round(lps * G.GRAIN_T_PER_M3 * 3.6 * 0.21 * 10) / 10; };
 
   // Nazwy kategorii (dla UI)
   G.MACHINE_CATS = {
