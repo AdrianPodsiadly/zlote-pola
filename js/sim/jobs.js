@@ -1,22 +1,29 @@
 // Złote Pola — zlecenia prac polowych i transportu, pojazdy na mapie, usługi kontraktorów → G.jobs (agent: maszyny, ludzie, prace)
 //
 // Stan: G.S.jobs = { list: [zlecenia aktywne i w kolejce], history: [zakończone, max 40] }
-// Zlecenie: { uid, op, pid, params, machines:[uid], worker, helper, night, status: 'queued'|'active'|'done'|'cancelled',
-//             stage: 'out'|'work'|'unload'|'home', reason (dlaczego czeka), order:[kafle w kolejności serpentyny], pos, done, total,
-//             bin (t w zbiorniku), binCap, binProd, fuel (l), fuelCost (zł), hours (h pracy), outTotal {produkt: ilość},
-//             contractor: null | { name, color, price, startTick, power, impl }, units: { main, shuttle } }
+// Zlecenie: { uid, op, pid, params, machines:[uid], worker, helpers:[uid], night, status: 'queued'|'active'|'done'|'cancelled',
+//             stage: 'out'|'work'|'home'|'parked', reason (dlaczego czeka), order:[kafle w kolejności serpentyny], pos, done, total,
+//             kind: null|'bunker'|'continuous' (zbiór), bin (t w zbiorniku), binCap, binProd, lastOut, fuel (l), fuelCost (zł), hours,
+//             outTotal {produkt: ilość}, sets: [{ tractor, trailer, helper (uid|null), tid, rid (id katalogu), hired }],
+//             transport: null | { sets, price } (wynajęty transport), contractor: null | { name, color, price, startTick, power, impl },
+//             units: { main, shuttles: [] } }
 // Jednostka (pojazd): { x, y (kafel, ułamkowy; środek kafla = +0.5), angle (rad, 0 = +x kafli), path:[idx], pi, mode, w (segment pracy) }
 //
 // Przebieg: wyjazd z podwórza (G.S.farm.yard) → jazda po drogach (BFS po ROAD/ASPHALT/YARD; przez własne pole wolno) → obróbka
 // pasami w serpentynie wzdłuż dłuższego boku działki (czas kafla = 0,25 ha / wydajność) → G.fields.workTile(pid, i, op, params)
 // dla każdego kafla → G.fields.complete → 'opDone' → powrót → 'jobDone'.
-// ZBIÓR: kombajn zbiera do zbiornika (cap). Pełny zbiornik:
-//   • jest przyczepa (drugi ciągnik + przyczepa + pomocnik w zleceniu) → przyczepa podjeżdża do kombajnu, przeładunek w polu,
-//     odwozi plon na podwórze i wraca (kombajn pracuje dalej; czeka tylko, gdy przyczepa nie zdąży),
-//   • brak przyczepy → kombajn zbożowy sam jedzie rozładować się na podwórze i wraca w to samo miejsce;
-//     kombajn ziemniaczany/buraczany wysypuje na pryzmę przy wjeździe na pole (plon trafia do magazynu),
-//   • sieczkarnia (bez zbiornika) bez przyczepy pracuje o 40 % wolniej, zielonka trafia od razu do magazynu.
-//   Plon trafia do G.inv dopiero po rozładunku (chyba że G.fields.workTile zwróci { stored: true } — wtedy sam go zapisał).
+//
+// ZBIÓR (logistyka wg autora gry):
+//   • Zbiór ZAWSZE wymaga co najmniej jednego zestawu transportowego: ciągnik + przyczepa + kierowca (helpers) — albo wynajętego
+//     transportu (spec.transport = liczba zestawów, usługa z kierowcą). Kontraktor przyjeżdża z kombajnem i własnymi zestawami.
+//   • Kombajn zbożowy / ziemniaczany / buraczany ('bunker'): napełnia zbiornik w czasie pracy. Od 70 % zbiornika woła przyczepę;
+//     przyczepa podjeżdża i staje z LEWEJ strony kombajnu, kombajn staje, rozkłada rurę (auger 'out') i przeładowuje ślimakiem
+//     (AUGER_TPH t/h gry). Pełna przyczepa (≥ 85 %) jedzie drogami na podwórze, wysypuje do magazynu i wraca na wjazd pola.
+//   • Pełny zbiornik i brak przyczepy przy kombajnie → kombajn STOI („Czeka na przyczepę — zbiornik pełny”).
+//   • Kombajn nie kończy pracy, nie wraca i nie wyjeżdża na drogę z ziarnem w zbiorniku — po ostatnim kaflu (albo po odwołaniu)
+//     czeka na opróżnienie, dopiero potem complete i powrót. Na drodze zbiornik jest zawsze pusty, rura złożona.
+//   • Sieczkarnia ('continuous'): bez zbiornika — pracuje tylko z przyczepą jadącą równolegle (lewa strona), zielonka leci na bieżąco.
+//   Plon trafia do G.inv dopiero po wysypaniu przyczepy na podwórzu (chyba że G.fields.workTile zwróci { stored: true }).
 (function () {
   const C = G.CFG, T = G.T, W = C.W, H = C.H, N = W * H, TPD = C.TICKS_PER_DAY, HA = C.TILE_HA;
   const J = G.jobs = {};
@@ -26,16 +33,24 @@
   // prędkości przejazdu w kaflach/h (skala dojazdów skompresowana dla czytelności; 1 kafel = 50 m)
   const SPD = { [T.ASPHALT]: 80, [T.ROAD]: 55, [T.YARD]: 25 };
   const SPD_OFF = 30;
-  const UNLOAD_H = 0.25, TRANSFER_H = 0.1;
+  const UNLOAD_H = 0.25;        // wysyp przyczepy na podwórzu
+  // Przeładunek ślimakiem: realnie ~100 l/s ≈ 270 t/h (zbiornik 8 t w ~2 min). Dla czytelności w grze 60 t/h
+  // (zbiornik 8 t ≈ 0,13 h gry ≈ 1 s przy 1×) — widać rurę i stojący kombajn, a wydajność dnia zmienia się o ~2–4 %.
+  const AUGER_TPH = 60;
+  const CALL_AT = 0.7, TRAILER_FULL = 0.85, FOLLOW_SPD = 30, SIDE = 0.95;
+  const TRANSPORT_PER_H = 160;  // usługa transportu: ciągnik + przyczepa + kierowca, zł/h
   const DUSTY = { plow: 1, cultivate: 1, harvest: 1, sow: 1, bale: 1, rake: 1, mow: 0, spray: 0, fertilize: 1, lime: 1 };
   const OP_NAMES = { plow: 'Orka', cultivate: 'Uprawa', lime: 'Wapnowanie', fertilize: 'Nawożenie', sow: 'Siew', spray: 'Oprysk', harvest: 'Zbiór', bale: 'Prasowanie', mow: 'Koszenie', rake: 'Zgrabianie' };
   J.opName = op => (G.fields && G.fields.OPS && G.fields.OPS[op] && G.fields.OPS[op].name) || OP_NAMES[op] || op;
+  J.AUGER_TPH = AUGER_TPH;
 
   const CONTRACTORS = [
     { name: 'Usługi Rolnicze Kowalczyk', color: '#e07b00' },
     { name: 'Agro-Serwis Mazur', color: '#4a6fa5' },
     { name: 'ZUR Nowak i Synowie', color: '#8a4fb0' }
   ];
+  const TRANSPORT_FIRM = { name: 'Transport Rolny Wójcik', color: '#6b6f73' };
+  const HIRED_SET = { tid: 'nordwal_150', rid: 'przyczepa_14' };
 
   // ===================== ŚCIEŻKI =====================
   const prev = new Int32Array(N), queue = new Int32Array(N);
@@ -73,8 +88,8 @@
     return p;
   }
   J.route = route;
-  function pathLen(from, path) { let L = 0, px = G.tx(from), py = G.ty(from); for (const i of path) { L += Math.hypot(G.tx(i) - px, G.ty(i) - py) / speedAt(i); px = G.tx(i); py = G.ty(i); } return L; }
   const speedAt = i => SPD[G.S.map.t[i]] || SPD_OFF;
+  function pathLen(from, path) { let L = 0, px = G.tx(from), py = G.ty(from); for (const i of path) { L += Math.hypot(G.tx(i) - px, G.ty(i) - py) / speedAt(i); px = G.tx(i); py = G.ty(i); } return L; }
 
   // wyjazd z podwórza: kafel YARD sąsiadujący z drogą (najbliżej środka)
   function yardExit() {
@@ -96,7 +111,7 @@
     return yardExit();
   }
 
-  // kolejność kafli: pasy wzdłuż dłuższego boku, serpentyna, start od strony wjazdu
+  // kolejność kafli: pasy wzdłuż dłuższego boku (wg faktycznych kafli działki), serpentyna, start od strony wjazdu
   function serpentine(job) {
     const p = G.S.parcels[job.pid], b = { x0: W, y0: H, x1: -1, y1: -1 };
     for (const i of p.tiles) { const x = G.tx(i), y = G.ty(i); if (x < b.x0) b.x0 = x; if (x > b.x1) b.x1 = x; if (y < b.y0) b.y0 = y; if (y > b.y1) b.y1 = y; }
@@ -127,8 +142,13 @@
 
   // ===================== DOBÓR ZESTAWU =====================
   function cropOf(op, params, pid) { return M().cropFor(op, params, pid); }
-  // z listy uid wybiera: maszynę napędową, narzędzie, zestaw transportowy (ciągnik + przyczepa)
-  function resolve(op, params, pid, uids) {
+  const helpersOf = spec => {
+    const arr = Array.isArray(spec.helpers) ? spec.helpers.slice() : [];
+    if (spec.helper != null && !arr.includes(spec.helper)) arr.push(spec.helper);
+    return arr.filter((u, k) => u != null && u !== spec.worker && arr.indexOf(u) === k);
+  };
+  // z listy uid wybiera: maszynę napędową, narzędzie, zestawy transportowe (ciągnik + przyczepa + kierowca)
+  function resolve(op, params, pid, uids, helpers, hiredN) {
     const crop = cropOf(op, params, pid), input = M().inputFor(op, params);
     const ms = (uids || []).map(u => M().get(u)).filter(Boolean);
     if (ms.length !== (uids || []).length) return { ok: false, reason: 'Wybrana maszyna nie istnieje' };
@@ -151,20 +171,37 @@
         return { ok: false, reason: near ? def(near).name + ' nie nadaje się do tej uprawy/środka' : 'Brak narzędzia do zabiegu: ' + J.opName(op) };
       }
       const req = def(impl).reqHp || 0;
-      const trs = ms.filter(m => def(m).cat === 'tractor');
+      const trs = ms.filter(m => def(m).cat === 'tractor').sort((a, b) => def(a).hp - def(b).hp);
       if (!trs.length) return { ok: false, reason: 'Brak ciągnika' };
       power = trs.find(m => def(m).hp >= req);
       if (!power) return { ok: false, reason: 'Za mała moc: ' + Math.max(...trs.map(m => def(m).hp)) + ' KM, ' + def(impl).name + ' wymaga ' + req + ' KM' };
     }
-    let shT = null, shTr = null;
+    // zestawy transportowe (tylko przy zbiorze)
+    const sets = [];
     if (op === 'harvest') {
-      shTr = ms.find(m => def(m).cat === 'trailer');
-      if (shTr) shT = ms.find(m => m !== power && def(m).cat === 'tractor' && def(m).hp >= (def(shTr).reqHp || 0));
-      if (!shT) shTr = null;
+      const trailers = ms.filter(m => def(m).cat === 'trailer').sort((a, b) => def(b).cap - def(a).cap);
+      const tractors = ms.filter(m => m !== power && def(m).cat === 'tractor').sort((a, b) => def(a).hp - def(b).hp);
+      const hs = (helpers || []).slice();
+      for (const tr of trailers) {
+        const k = tractors.findIndex(t => def(t).hp >= (def(tr).reqHp || 0));
+        if (k < 0 || !hs.length) continue;
+        const t = tractors.splice(k, 1)[0];
+        sets.push({ tractor: t.uid, trailer: tr.uid, helper: hs.shift(), tid: t.id, rid: tr.id, hired: false });
+      }
+      for (let k = 0; k < (hiredN | 0); k++) sets.push({ tractor: null, trailer: null, helper: null, tid: HIRED_SET.tid, rid: HIRED_SET.rid, hired: true });
+      if (!sets.length) {
+        const why = !trailers.length ? 'brak przyczepy' : !tractors.length ? 'brak drugiego ciągnika do przyczepy' : 'brak kierowcy przyczepy';
+        return { ok: false, need: 'transport', reason: 'Zbiór wymaga zestawu ciągnik + przyczepa + kierowca (' + why + '). Wynajmij przyczepę/ciągnik, zatrudnij kierowcę albo zamów transport.' };
+      }
     }
-    return { ok: true, power, impl, shT, shTr, crop };
+    return { ok: true, power, impl, sets, crop };
   }
 
+  function harvestKind(pd, id) {
+    const wd = id && id.cat !== 'header' ? id : pd;
+    if (wd.cat === 'forage_harvester') return 'continuous';
+    return 'bunker';
+  }
   function haHFor(job, day) {
     const c = job.contractor;
     const pd = c ? G.MACHINES[c.power] : def(job.power), id = c ? (c.impl ? G.MACHINES[c.impl] : null) : (job.impl ? def(job.impl) : null);
@@ -173,7 +210,6 @@
     let r = G.machines.rate(pd.id, id && id.id, skill);
     if (!day && isNight()) r *= 0.8;
     const wd = id || pd;
-    if (wd.cat === 'forage_harvester' && !job.units.shuttle && !job.contractor) r *= 0.6;
     if (wd.cat === 'manure_spreader' && wd.model === 'manure_spreader' && hasIdleLoader()) r *= 1.3;
     return Math.max(0.02, r);
   }
@@ -192,12 +228,12 @@
     if (G.fields && G.fields.canDo) { try { const r = G.fields.canDo(pid, op, params); if (r && !r.ok) return r; } catch (e) { console.error(e); } }
     return { ok: true };
   }
+  const wc = { tick: -1, r: { ok: true } };
   function weatherOk() {
     if (!(G.weather && G.weather.canWork)) return { ok: true };
     if (wc.tick !== G.S.tick) { wc.tick = G.S.tick; try { wc.r = G.weather.canWork() || { ok: true }; } catch (e) { wc.r = { ok: true }; } }
     return wc.r;
   }
-  const wc = { tick: -1, r: { ok: true } };
 
   J.validate = function (spec) {
     spec = spec || {};
@@ -206,93 +242,148 @@
     const po = parcelOk(pid); if (!po.ok) return po;
     if (J.list().some(j => j.pid === pid && j.op === op)) return { ok: false, reason: 'To zlecenie już jest w kolejce' };
     const cd = canDo(pid, op, spec.params); if (!cd.ok) return { ok: false, reason: cd.reason || 'Zabieg teraz niemożliwy' };
-    const rs = resolve(op, spec.params, pid, spec.machines); if (!rs.ok) return rs;
     const w = G.workers && G.workers.get(spec.worker);
     if (!w) return { ok: false, reason: 'Wybierz pracownika' };
-    if (rs.shT && (!spec.helper || spec.helper === spec.worker || !G.workers.get(spec.helper))) { rs.shT = null; rs.shTr = null; rs.warn = 'Przyczepa pominięta — potrzebny drugi pracownik'; }
-    for (const m of [rs.power, rs.impl, rs.shT, rs.shTr]) if (m) { const r = G.machines.ready(m.uid); if (!r.ok) return { ok: false, reason: def(m).name + ': ' + r.reason }; }
+    const hs = helpersOf(spec);
+    for (const h of hs) if (!G.workers.get(h)) return { ok: false, reason: 'Nieznany kierowca przyczepy' };
+    const rs = resolve(op, spec.params, pid, spec.machines, hs, op === 'harvest' ? spec.transport : 0);
+    if (!rs.ok) return rs;
+    const own = rs.sets.filter(s => !s.hired);
+    for (const m of [rs.power, rs.impl].concat(own.map(s => M().get(s.tractor)), own.map(s => M().get(s.trailer)))) if (m) {
+      const r = G.machines.ready(m.uid); if (!r.ok) return { ok: false, reason: def(m).name + ': ' + r.reason };
+    }
     const waits = [];
-    for (const m of [rs.power, rs.impl, rs.shT, rs.shTr]) if (m && m.busy) waits.push(def(m).name);
-    if (w.busy) waits.push(w.name);
+    for (const m of [rs.power, rs.impl].concat(own.map(s => M().get(s.tractor)), own.map(s => M().get(s.trailer)))) if (m && m.busy) waits.push(def(m).name);
+    for (const u of [spec.worker].concat(own.map(s => s.helper))) { const x = G.workers.get(u); if (x && x.busy) waits.push(x.name); }
     const wo = weatherOk();
     if (!wo.ok) waits.push('pogoda: ' + (wo.reason || 'nie da się pracować'));
-    rs.warn = [rs.warn, waits.length ? 'Zlecenie poczeka na: ' + waits.join(', ') : ''].filter(Boolean).join('. ');
+    const unusedH = hs.length - own.length;
+    rs.warn = [unusedH > 0 && op === 'harvest' ? 'Nie wszyscy kierowcy mają zestaw' : '', waits.length ? 'Zlecenie poczeka na: ' + waits.join(', ') : ''].filter(Boolean).join('. ');
     return rs;
   };
 
   J.create = function (spec) {
     const v = J.validate(spec);
-    if (!v.ok) return { ok: false, reason: v.reason };
+    if (!v.ok) return { ok: false, reason: v.reason, need: v.need };
     const p = G.S.parcels[spec.pid];
     const job = baseJob(spec.op, spec.pid, spec.params);
+    const own = v.sets.filter(s => !s.hired);
     Object.assign(job, {
-      machines: [v.power, v.impl, v.shT, v.shTr].filter(Boolean).map(m => m.uid),
-      power: v.power.uid, impl: v.impl ? v.impl.uid : null, shTractor: v.shT ? v.shT.uid : null, shTrailer: v.shTr ? v.shTr.uid : null,
-      worker: spec.worker, helper: v.shT ? spec.helper : null, night: spec.night !== false
+      machines: [v.power, v.impl].filter(Boolean).map(m => m.uid).concat(own.map(s => s.tractor), own.map(s => s.trailer)),
+      power: v.power.uid, impl: v.impl ? v.impl.uid : null, sets: v.sets.map(s => Object.assign({}, s)),
+      worker: spec.worker, helpers: own.map(s => s.helper), night: spec.night !== false
     });
+    const hiredN = v.sets.length - own.length;
+    if (hiredN > 0) {
+      const q = J.transportQuote(spec.pid, hiredN, spec);
+      if (!G.finance.spend(q.price, 'usługi', 'Transport do zbioru: ' + hiredN + ' zest. (' + TRANSPORT_FIRM.name + ')')) return { ok: false, reason: 'Brak środków na transport' };
+      job.transport = { sets: hiredN, price: q.price, name: TRANSPORT_FIRM.name, color: TRANSPORT_FIRM.color };
+    }
     G.S.jobs.list.push(job);
-    G.notify('📋 Zlecenie: ' + J.opName(job.op) + ' — ' + p.name + (v.warn ? ' (' + v.warn + ')' : ''), 'info');
+    G.notify('📋 Zlecenie: ' + J.opName(job.op) + ' — ' + p.name + (v.sets.length ? ' (' + v.sets.length + ' przyczep' + (v.sets.length === 1 ? 'a' : 'y') + ')' : '') + (v.warn ? ' — ' + v.warn : ''), 'info');
     return { ok: true, job, warn: v.warn || '' };
   };
   function baseJob(op, pid, params) {
     return {
-      uid: G.uid(), op, pid, params: params ? JSON.parse(JSON.stringify(params)) : {}, machines: [], worker: null, helper: null, night: true,
-      status: 'queued', stage: null, reason: '', created: G.S.tick, started: 0, finished: 0, power: null, impl: null, shTractor: null, shTrailer: null,
-      contractor: null, order: [], pos: 0, done: 0, total: 0, bin: 0, binCap: 0, binProd: {}, binStored: false, fuel: 0, fuelPending: 0, fuelCost: 0,
-      hours: 0, outTotal: {}, units: { main: null, shuttle: null }, err: null, errTick: -1, fuelTick: -1, cancelled: false, userPaused: false, mode: null
+      uid: G.uid(), op, pid, params: params ? JSON.parse(JSON.stringify(params)) : {}, machines: [], worker: null, helpers: [], night: true,
+      status: 'queued', stage: null, reason: '', created: G.S.tick, started: 0, finished: 0, power: null, impl: null, sets: [],
+      contractor: null, transport: null, order: [], pos: 0, done: 0, total: 0, kind: null, bin: 0, binCap: 0, binProd: {}, lastOut: 0,
+      fuel: 0, fuelPending: 0, fuelCost: 0, hours: 0, outTotal: {}, units: { main: null, shuttles: [] }, err: null, errTick: -1, fuelTick: -1,
+      cancelled: false, userPaused: false, mode: null, want: false
     };
   }
 
-  // podpowiedź zestawu: najlepszy dostępny zestaw + najlepszy wolny pracownik (+ przyczepa przy zbiorze)
-  J.suggest = function (op, pid, params) {
-    const combos = G.machines.compatible(op, params, pid).filter(c => c.available);
-    if (!combos.length) return null;
-    const c = combos[0];
-    const free = G.workers.list().filter(w => !w.busy && w.role !== 'barn').sort((a, b) => b.skills.field - a.skills.field || b.energy - a.energy);
-    if (!free.length) return null;
-    const spec = { op, pid, params, machines: [c.tractor, c.implement].filter(Boolean), worker: free[0].uid };
-    if (op === 'harvest' && free[1]) {
-      const tr = G.machines.list().filter(m => def(m).cat === 'trailer' && !m.busy && G.machines.ready(m.uid).ok).sort((a, b) => def(b).cap - def(a).cap)[0];
-      const t2 = tr && G.machines.list().find(m => m.uid !== c.tractor && def(m).cat === 'tractor' && !m.busy && G.machines.ready(m.uid).ok && def(m).hp >= (def(tr).reqHp || 0));
-      if (tr && t2) { spec.machines.push(t2.uid, tr.uid); spec.helper = free[1].uid; }
+  // usługa transportu do zbioru (ciągnik 150 KM + przyczepa 14 t + kierowca), płatna z góry wg szacowanych godzin
+  J.transportQuote = function (pid, n, spec) {
+    const p = G.S.parcels[pid];
+    n = Math.max(1, n | 0);
+    let workH = p ? p.area / 2.5 : 4;
+    if (spec && spec.machines && spec.machines.length) {
+      const pw = spec.machines.map(u => M().get(u)).find(m => m && M().isPower(def(m)) && (def(m).self || def(m).cat === 'tractor'));
+      const im = spec.machines.map(u => M().get(u)).find(m => m && !M().isPower(def(m)) && def(m).cat !== 'trailer');
+      if (pw) workH = p.area / Math.max(0.2, G.machines.rate(pw.id, im && im.id, 1));
     }
-    spec.label = c.label;
+    const hours = Math.max(4, Math.ceil(workH * 1.15 + 1));
+    return { ok: !!p, sets: n, hours, perHour: TRANSPORT_PER_H, price: Math.round(hours * TRANSPORT_PER_H * n / 10) * 10, name: TRANSPORT_FIRM.name };
+  };
+
+  // podpowiedź zestawu: { ok:true, op, pid, params, machines, worker, helpers, label }
+  //   albo { ok:false, need: 'machine'|'worker'|'transport', reason, rent:[{id, name, perDay}], hire:[cid], transport: quote, contractor: quote }
+  J.suggest = function (op, pid, params) {
+    const fail = (need, reason, extra) => Object.assign({ ok: false, need, reason, rent: [], hire: [], contractor: J.contractorQuote(pid, op, params) }, extra || {});
+    const combos = G.machines.compatible(op, params, pid).filter(c => c.available);
+    if (!combos.length) {
+      const rent = G.machines.catalogFor(op, Object.assign({ crop: cropOf(op, params, pid) }, params)).filter(d => d.rentPerDay > 0).map(d => ({ id: d.id, name: d.name, perDay: d.rentPerDay }));
+      return fail('machine', 'Brak wolnej maszyny do zabiegu: ' + J.opName(op), { rent });
+    }
+    const free = G.workers.list().filter(w => !w.busy && w.role !== 'barn').sort((a, b) => b.skills.field - a.skills.field || b.energy - a.energy);
+    if (!free.length) return fail('worker', 'Brak wolnego pracownika', { hire: G.workers.candidates().map(c => c.cid) });
+    const c = combos[0];
+    const spec = { ok: true, op, pid, params, machines: [c.tractor, c.implement].filter(Boolean), worker: free[0].uid, helpers: [], label: c.label };
+    if (op === 'harvest') {
+      const freeOk = m => !m.busy && G.machines.ready(m.uid).ok && !spec.machines.includes(m.uid);
+      const trailers = G.machines.list().filter(m => def(m).cat === 'trailer' && freeOk(m)).sort((a, b) => def(b).cap - def(a).cap);
+      const tractors = G.machines.list().filter(m => def(m).cat === 'tractor' && freeOk(m)).sort((a, b) => def(a).hp - def(b).hp);
+      const drivers = free.slice(1);
+      for (const tr of trailers) {
+        const k = tractors.findIndex(t => def(t).hp >= (def(tr).reqHp || 0));
+        if (k < 0 || !drivers.length) continue;
+        spec.machines.push(tractors.splice(k, 1)[0].uid, tr.uid);
+        spec.helpers.push(drivers.shift().uid);
+        if (spec.helpers.length >= 2) break;
+      }
+      if (!spec.helpers.length) {
+        const rent = [];
+        if (!trailers.length) rent.push(...G.machines.catalog('trailer').filter(d => d.rentPerDay > 0).map(d => ({ id: d.id, name: d.name, perDay: d.rentPerDay })));
+        if (!tractors.length) rent.push(...G.machines.catalog('tractor').filter(d => d.rentPerDay > 0).map(d => ({ id: d.id, name: d.name, perDay: d.rentPerDay })));
+        return fail('transport', 'Zbiór wymaga zestawu ciągnik + przyczepa + kierowca' + (!trailers.length ? ' — brak przyczepy' : !tractors.length ? ' — brak drugiego ciągnika' : ' — brak kierowcy'),
+          { rent, hire: drivers.length ? [] : G.workers.candidates().map(x => x.cid), transport: J.transportQuote(pid, 1, spec), partial: spec });
+      }
+      spec.label += ' + ' + spec.helpers.length + ' × przyczepa';
+    }
     return spec;
   };
 
   // ===================== SZACUNEK =====================
   J.estimate = function (spec) {
-    if (spec && spec.contractor) { const q = J.contractorQuote(spec.pid, spec.op, spec.params); return Object.assign({ hours: q.hoursEst || 0, fuel: 0, cost: q.price }, q); }
-    const v = J.validate(Object.assign({}, spec, { _est: true }));
+    if (spec && spec.contractor) { const q = J.contractorQuote(spec.pid, spec.op, spec.params); return Object.assign({ hours: q.hoursEst || 0, fuel: 0 }, q, { cost: q.price }); }
     const po = parcelOk(spec && spec.pid);
     if (!po.ok) return { ok: false, reason: po.reason, hours: 0, fuel: 0, cost: 0 };
-    const rs = v.ok ? v : resolve(spec.op, spec.params, spec.pid, spec.machines);
-    if (!rs.ok) return { ok: false, reason: rs.reason, hours: 0, fuel: 0, cost: 0 };
-    const fake = { power: rs.power.uid, impl: rs.impl && rs.impl.uid, worker: spec.worker, units: { shuttle: rs.shT && spec.helper ? {} : null }, contractor: null };
+    const v = J.validate(spec);
+    const rs = v.ok ? v : resolve(spec.op, spec.params, spec.pid, spec.machines, helpersOf(spec), spec.transport);
+    if (!rs.ok) return { ok: false, reason: rs.reason, need: rs.need, hours: 0, fuel: 0, cost: 0 };
+    const fake = { power: rs.power.uid, impl: rs.impl && rs.impl.uid, worker: spec.worker, contractor: null };
     const haH = haHFor(fake, true);
     const tiles = serpentine({ pid: spec.pid, op: spec.op }).length;
-    const workH = tiles * HA / haH;
+    let workH = tiles * HA / haH;
     const p = po.p, ex = yardExit();
     const travelH = 2 * pathLen(ex, route(ex, p.entry >= 0 ? p.entry : p.tiles[0], null)) / (def(rs.power).self ? 0.75 : 1);
     const pd = def(rs.power), id = rs.impl ? def(rs.impl) : null;
+    if (spec.op === 'harvest' && harvestKind(pd, id) === 'bunker') {
+      // postoje na przeładunek
+      const yieldT = (G.CROPS && G.CROPS[rs.crop] && G.CROPS[rs.crop].yieldBase) || 7;
+      workH += tiles * HA * yieldT / AUGER_TPH;
+    }
     const load = id && id.load != null ? id.load : 1;
     let fuel = pd.fuelLph * (workH * load + travelH * 0.45);
-    if (rs.shT) fuel += def(rs.shT).fuelLph * 0.45 * workH * 0.6;
+    for (const s of rs.sets) if (!s.hired) fuel += G.MACHINES[s.tid].fuelLph * 0.45 * (workH * 0.6 + travelH);
     const fuelCost = fuel * G.machines.fuelPrice();
     const wf = G.workers ? G.workers.wearFactor(spec.worker) : 1;
     const wearCost = [rs.power, rs.impl].filter(Boolean).reduce((a, m) => a + (m.rented ? 0 : def(m).price * (workH / G.machines.life(def(m))) * 0.6 * wf), 0);
-    const w = G.workers.get(spec.worker), wageCost = w ? w.wage * (workH + travelH) / 10 : 0;
+    let wageCost = 0;
+    for (const u of [spec.worker].concat(rs.sets.filter(s => !s.hired).map(s => s.helper))) { const w = G.workers.get(u); if (w) wageCost += w.wage * (workH + travelH) / 10; }
+    const transportCost = rs.sets.some(s => s.hired) ? J.transportQuote(spec.pid, rs.sets.filter(s => s.hired).length, spec).price : 0;
     const r1 = x => Math.round(x * 10) / 10;
     return {
-      ok: v.ok, reason: v.ok ? (v.warn || '') : v.reason, hours: r1(workH + travelH), workH: r1(workH), travelH: r1(travelH), haH: Math.round(haH * 100) / 100,
-      area: tiles * HA, tiles, fuel: Math.round(fuel), fuelCost: Math.round(fuelCost), wearCost: Math.round(wearCost), wageCost: Math.round(wageCost),
-      cost: Math.round(fuelCost + wearCost + wageCost)
+      ok: v.ok, reason: v.ok ? (v.warn || '') : v.reason, need: v.need, hours: r1(workH + travelH), workH: r1(workH), travelH: r1(travelH), haH: Math.round(haH * 100) / 100,
+      area: tiles * HA, tiles, sets: rs.sets.length, fuel: Math.round(fuel), fuelCost: Math.round(fuelCost), wearCost: Math.round(wearCost), wageCost: Math.round(wageCost),
+      transportCost, cost: Math.round(fuelCost + wearCost + wageCost + transportCost)
     };
   };
 
   // ===================== KONTRAKTOR (USŁUGI) =====================
   function fleetFor(op, crop, input, params) {
-    const F = (power, impl) => ({ power, impl });
+    const F = (power, impl, sets) => ({ power, impl, sets: sets || 0 });
     switch (op) {
       case 'plow': return F('nordwal_220', 'plug_5');
       case 'cultivate': return F('nordwal_220', 'talerzowa_6');
@@ -308,11 +399,11 @@
         return F('nordwal_220', 'siewnik_6');
       case 'spray': return F('bruzda_110', 'oprysk_24');
       case 'harvest':
-        if (crop === 'ziemniaki') return F('nordwal_150', 'ziemniak_2');
-        if (crop === 'buraki') return F('burak_6', null);
-        if ((params && params.mode === 'silage') || crop === 'kiszonka') return F('sieczkarnia_s', null);
-        if (crop === 'kukurydza' || crop === 'slonecznik') return F('klosownik_k62', 'heder_kukurydza');
-        return F('klosownik_k62', 'heder_62');
+        if (crop === 'ziemniaki') return F('nordwal_150', 'ziemniak_2', 2);
+        if (crop === 'buraki') return F('burak_6', null, 2);
+        if ((params && params.mode === 'silage') || crop === 'kiszonka') return F('sieczkarnia_s', null, 3);
+        if (crop === 'kukurydza' || crop === 'slonecznik') return F('klosownik_k62', 'heder_kukurydza', 2);
+        return F('klosownik_k62', 'heder_62', 2);
       case 'mow': return F('nordwal_150', 'kosiarka_9');
       case 'rake': return F('bruzda_110', 'zgrabiarka_8');
       case 'bale': return F('bruzda_110', 'prasa_ow');
@@ -354,7 +445,7 @@
     const c = CONTRACTORS[(pid + op.length) % CONTRACTORS.length];
     const fl = fleetFor(op, crop, input, params);
     const hoursEst = Math.round(p.area / G.machines.rate(fl.power, fl.impl, 1.12) * 10) / 10;
-    return { ok: true, price, days, rate, unit, qty, peak, name: c.name, color: c.color, area: p.area, hoursEst, startText: G.dateText(startTickFor(days)) };
+    return { ok: true, price, days, rate, unit, qty, peak, name: c.name, color: c.color, area: p.area, hoursEst, trailers: fl.sets, startText: G.dateText(startTickFor(days)) };
   };
   function startTickFor(days) { const d = G.date(); return (d.dayIndex + days) * TPD + 7; }
   J.hireContractor = function (pid, op, params) {
@@ -366,6 +457,7 @@
     const job = baseJob(op, pid, params);
     const crop = cropOf(op, params, pid), fl = fleetFor(op, crop, M().inputFor(op, params), params);
     job.contractor = { name: q.name, color: q.color, price: q.price, startTick: startTickFor(q.days), power: fl.power, impl: fl.impl };
+    for (let k = 0; k < fl.sets; k++) job.sets.push({ tractor: null, trailer: null, helper: null, tid: HIRED_SET.tid, rid: HIRED_SET.rid, hired: true });
     job.reason = 'Usługa zaplanowana na ' + G.dateText(job.contractor.startTick);
     G.S.jobs.list.push(job);
     G.notify('📞 ' + q.name + ': ' + J.opName(op) + ' na ' + G.S.parcels[pid].name + ' — przyjadą ' + G.dateText(job.contractor.startTick) + ' (' + G.fmtMoney(q.price) + ')', 'info');
@@ -386,26 +478,34 @@
   };
   J.pause = function (uid) { const j = J.get(uid); if (!j || j.status === 'done') return false; j.userPaused = true; return true; };
   J.resume = function (uid) { const j = J.get(uid); if (!j) return false; j.userPaused = false; j.err = null; j.errTick = -1; j.fuelTick = -1; return true; };
+  // odwołanie: kombajn z ziarnem najpierw opróżnia zbiornik na przyczepę, dopiero potem wraca
   J.cancel = function (uid) {
     const j = J.get(uid);
     if (!j || (j.status !== 'queued' && j.status !== 'active')) return { ok: false, reason: 'Zlecenie nieaktywne' };
+    if (j.cancelled) return { ok: false, reason: 'Już odwołane' };
+    const frac = j.total ? 1 - j.done / j.total : 1;
     if (j.contractor) {
-      const frac = j.total ? 1 - j.done / j.total : 1;
       const refund = Math.round(j.contractor.price * frac * (j.status === 'queued' ? 0.9 : 0.7));
       if (refund > 0) G.finance.earn(refund, 'usługi', 'Zwrot za odwołaną usługę');
     }
+    if (j.transport) {
+      const refund = Math.round(j.transport.price * frac * (j.status === 'queued' ? 0.9 : 0.5));
+      if (refund > 0) G.finance.earn(refund, 'usługi', 'Zwrot za niewykorzystany transport');
+    }
     if (j.status === 'queued') { finish(j, 'cancelled'); return { ok: true }; }
     j.cancelled = true; j.userPaused = false;
-    goHome(j);
-    const s = j.units.shuttle;
-    if (s && s.phase !== 'park') { s.phase = s.load > 0 ? 'toYard' : 'home'; s.path = route(tileOf(s), yardExit(), j.pid); s.pi = 0; }
-    G.notify('↩️ Odwołano: ' + J.opName(j.op) + ' — ' + G.S.parcels[j.pid].name, 'info');
+    if (j.stage === 'out') goHome(j);
+    else if (j.stage === 'work' && !(j.kind === 'bunker' && j.bin > 1e-6)) goHome(j);
+    else if (j.stage === 'work') j.reason = 'Odwołane — opróżnia zbiornik przed zjazdem';
+    G.notify('↩️ Odwołano: ' + J.opName(j.op) + ' — ' + G.S.parcels[j.pid].name + (j.bin > 1e-6 ? ' (najpierw przeładunek ziarna)' : ''), 'info');
     return { ok: true };
   };
 
   const tileOf = u => G.idx(Math.max(0, Math.min(W - 1, Math.floor(u.x))), Math.max(0, Math.min(H - 1, Math.floor(u.y))));
   const home = j => j.contractor ? edgeStart() : yardExit();
+  const setHome = (j, s) => (j.contractor || s.hired) ? (j.contractor ? edgeStart() : edgeStart()) : yardExit();
   function newUnit(at) { return { x: G.tx(at) + 0.5, y: G.ty(at) + 0.5, angle: 0, path: [], pi: 0, mode: 'drive', w: null }; }
+  const standbyOf = j => { const p = G.S.parcels[j.pid]; return p.entry >= 0 ? p.entry : j.order[0]; };
 
   function tryStart(j) {
     if (j.userPaused) { j.reason = 'Wstrzymane'; return; }
@@ -419,40 +519,48 @@
         if (!r.ok) { j.reason = def(m).name + ': ' + r.reason; return; }
         if (m.busy && m.busy !== j.uid) { j.reason = 'Czeka na: ' + def(m).name; return; }
       }
-      for (const wu of [j.worker, j.helper].filter(Boolean)) {
+      for (const wu of [j.worker].concat(j.helpers)) {
         if (!G.workers.get(wu)) { G.notify('❌ Zlecenie anulowane — brak pracownika', 'bad'); finish(j, 'cancelled'); return; }
         const a = G.workers.available(wu, j.uid, true);
         if (!a.ok) { j.reason = a.reason; return; }
       }
     }
     const cd = canDo(j.pid, j.op, j.params);
-    if (!cd.ok) { G.notify('❌ ' + J.opName(j.op) + ' — ' + G.S.parcels[j.pid].name + ': ' + (cd.reason || 'zabieg niemożliwy'), 'bad'); if (j.contractor) G.finance.earn(Math.round(j.contractor.price * 0.9), 'usługi', 'Zwrot: usługa niewykonana'); finish(j, 'cancelled'); return; }
+    if (!cd.ok) {
+      G.notify('❌ ' + J.opName(j.op) + ' — ' + G.S.parcels[j.pid].name + ': ' + (cd.reason || 'zabieg niemożliwy'), 'bad');
+      if (j.contractor) G.finance.earn(Math.round(j.contractor.price * 0.9), 'usługi', 'Zwrot: usługa niewykonana');
+      if (j.transport) G.finance.earn(Math.round(j.transport.price * 0.9), 'usługi', 'Zwrot: transport niewykorzystany');
+      finish(j, 'cancelled'); return;
+    }
     const wo = weatherOk();
     if (!wo.ok) { j.reason = 'Pogoda: ' + (wo.reason || 'nie da się pracować'); return; }
     // start
     for (const uid of j.machines) G.machines.get(uid).busy = j.uid;
-    for (const wu of [j.worker, j.helper].filter(Boolean)) G.workers.get(wu).busy = j.uid;
+    if (!j.contractor) for (const wu of [j.worker].concat(j.helpers)) { const w = G.workers.get(wu); if (w) w.busy = j.uid; }
     j.status = 'active'; j.started = G.S.tick; j.reason = '';
     j.order = serpentine(j); j.pos = 0; j.done = 0; j.total = j.order.length;
     const pd = j.contractor ? G.MACHINES[j.contractor.power] : def(j.power), id = j.contractor ? G.MACHINES[j.contractor.impl] : (j.impl && def(j.impl));
     j.mode = (id && id.mode) || pd.mode || null;
-    j.binCap = (!j.contractor && j.op === 'harvest') ? ((id && id.cap) || (pd.self && pd.cap) || 0) : 0;
+    if (j.op === 'harvest') {
+      j.kind = harvestKind(pd, id);
+      j.binCap = j.kind === 'bunker' ? ((id && id.cap) || pd.cap || 5) : 0;
+    }
     const start = home(j);
     const u = j.units.main = newUnit(start);
     u.spd = pd.self ? 0.75 : 1;
     if (j.order.length) { u.path = routeNear(start, j.order[0], j.pid); u.angle = initAngle(start, u.path); }
     j.stage = 'out';
-    if (j.shTractor) {
-      const s = j.units.shuttle = newUnit(start);
-      s.phase = 'out'; s.load = 0; s.prod = {}; s.cap = def(j.shTrailer).cap;
-      const p = G.S.parcels[j.pid];
-      s.path = route(start, p.entry >= 0 ? p.entry : j.order[0], j.pid); s.angle = initAngle(start, s.path);
-    }
+    j.units.shuttles = j.sets.map((st, k) => {
+      const from = setHome(j, st), s = newUnit(from);
+      s.k = k; s.phase = 'out'; s.load = 0; s.prod = {}; s.cap = G.MACHINES[st.rid].cap;
+      s.path = route(from, standbyOf(j), j.pid); s.angle = initAngle(from, s.path);
+      return s;
+    });
     G.notify('🚜 Start: ' + J.opName(j.op) + ' — ' + G.S.parcels[j.pid].name + (j.contractor ? ' (' + j.contractor.name + ')' : ''), 'info', { parcel: j.pid, key: 'start_' + j.uid });
   }
   function initAngle(from, path) { if (!path.length) return 0; return Math.atan2(G.ty(path[0]) - G.ty(from), G.tx(path[0]) - G.tx(from)); }
 
-  // ruch po ścieżce; zwraca niewykorzystany czas
+  // ---------- ruch ----------
   function turn(u, target, moved) {
     let d = target - u.angle;
     while (d > Math.PI) d -= 2 * Math.PI;
@@ -461,6 +569,7 @@
     u.angle += Math.abs(d) <= max ? d : Math.sign(d) * max;
     if (u.angle > Math.PI) u.angle -= 2 * Math.PI; else if (u.angle < -Math.PI) u.angle += 2 * Math.PI;
   }
+  // jazda po ścieżce; zwraca niewykorzystany czas
   function drive(j, u, dt, who) {
     let used = 0;
     u.mode = 'drive';
@@ -477,6 +586,8 @@
     return dt - used;
   }
   const pathDone = u => u.pi >= u.path.length;
+  // punkt przy lewym boku pojazdu (rura wyładowcza kombajnu / wysyp sieczkarni). Układ kafli: y w dół → lewa = (sin a, −cos a)
+  const sidePoint = u => ({ x: u.x + Math.sin(u.angle) * SIDE, y: u.y - Math.cos(u.angle) * SIDE });
 
   // przyczyna postoju (null = można pracować)
   function blocked(j) {
@@ -496,7 +607,7 @@
     return null;
   }
 
-  // koszty pracy: paliwo, motogodziny, zużycie, zmęczenie
+  // koszty pracy: paliwo, motogodziny, zużycie, zmęczenie. who: 'main' | indeks zestawu (liczba)
   function account(j, who, dtH, kind) {
     if (dtH <= 0) return;
     if (who === 'main') j.hours = Math.round((j.hours + dtH) * 1000) / 1000;
@@ -505,18 +616,20 @@
     let fuel = 0;
     if (who === 'main') {
       const pd = def(j.power), id = j.impl ? def(j.impl) : null;
-      const load = kind === 'road' ? 0.45 : (id && id.load != null ? id.load : 1);
+      const load = kind === 'road' ? 0.45 : kind === 'auger' ? 0.3 : (id && id.load != null ? id.load : 1);
       fuel = pd.fuelLph * load * dtH;
       const wf = G.workers.wearFactor(j.worker);
-      G.machines.use(j.power, dtH, wf * (kind === 'road' ? 0.6 : 1));
+      G.machines.use(j.power, dtH, wf * (kind === 'work' ? 1 : 0.6));
       if (j.impl && kind === 'work') G.machines.use(j.impl, dtH, wf);
       G.workers.exert(j.worker, dtH, night, 'field');
     } else {
-      fuel = def(j.shTractor).fuelLph * 0.45 * dtH;
-      const wf = G.workers.wearFactor(j.helper);
-      G.machines.use(j.shTractor, dtH, wf * 0.6);
-      G.machines.use(j.shTrailer, dtH, 0.5);
-      G.workers.exert(j.helper, dtH, night, 'field');
+      const st = j.sets[who];
+      if (!st || st.hired) return;
+      fuel = def(st.tractor).fuelLph * 0.45 * dtH;
+      const wf = G.workers.wearFactor(st.helper);
+      G.machines.use(st.tractor, dtH, wf * 0.6);
+      G.machines.use(st.trailer, dtH, 0.5);
+      G.workers.exert(st.helper, dtH, night, 'field');
     }
     j.fuel += fuel; j.fuelPending += fuel;
     if (j.fuelPending >= 20) flushFuel(j);
@@ -548,52 +661,92 @@
     if (r.out) handleOut(j, r.out, !!r.stored);
     return r;
   }
+  // plon: masowy (t) → zbiornik kombajnu albo przyczepa przy sieczkarni; reszta (np. bele) od razu do magazynu
   function handleOut(j, out, stored) {
+    let tons = 0;
+    const rcv = j.kind === 'continuous' ? receiver(j) : null;
     for (const id in out) {
       const q = +out[id];
       if (!(q > 0)) continue;
       j.outTotal[id] = Math.round(((j.outTotal[id] || 0) + q) * 1000) / 1000;
       const unit = G.PRODUCTS[id] && G.PRODUCTS[id].unit;
-      if (j.binCap > 0 && (unit === 't' || !unit)) {
-        j.bin += q;
-        if (!stored) j.binProd[id] = (j.binProd[id] || 0) + q;
-      } else if (!stored) G.inv.add(id, q);
+      const bulk = j.op === 'harvest' && (unit === 't' || !unit);
+      if (bulk && j.kind === 'bunker') { j.bin += q; tons += q; if (!stored) j.binProd[id] = (j.binProd[id] || 0) + q; }
+      else if (bulk && j.kind === 'continuous' && rcv) { rcv.load += q; tons += q; if (!stored) rcv.prod[id] = (rcv.prod[id] || 0) + q; }
+      else if (!stored) G.inv.add(id, q);
     }
+    if (tons > 0) j.lastOut = tons;
+    if (rcv && rcv.load + j.lastOut > rcv.cap + 1e-6) release(j, rcv);
   }
   function deliver(prod) { for (const id in prod) if (prod[id] > 0) G.inv.add(id, Math.round(prod[id] * 1000) / 1000); }
-  function deliverBin(j) { deliver(j.binProd); j.binProd = {}; j.bin = 0; }
+
+  // ---------- przyczepy: kto przy kombajnie ----------
+  const shuttles = j => (j.units && j.units.shuttles) || [];
+  const receiver = j => shuttles(j).find(s => s.phase === 'follow') || null;
+  const aligned = (s, u) => { const p = sidePoint(u); return s.phase === 'follow' && Math.hypot(s.x - p.x, s.y - p.y) < 0.2; };
+  function release(j, s) {
+    const atEnd = j.pos >= j.order.length || j.cancelled;
+    if (s.load >= s.cap * TRAILER_FULL || (atEnd && (j.bin <= 1e-6 || j.kind === 'continuous') && s.load > 0)) { s.phase = 'toYard'; s.path = route(tileOf(s), yardExit(), j.pid); s.pi = 0; }
+    else s.phase = 'standby';
+    s.receiving = false;
+  }
 
   // ---------- jednostka główna ----------
   function stepMain(j, dt) {
     const u = j.units.main;
     for (let guard = 0; guard < 400 && dt > 1e-9; guard++) {
-      const sig = j.stage + u.mode + j.pos + (u.unl ? u.unl.phase : '');
+      const sig = j.stage + u.mode + j.pos + j.bin.toFixed(4);
       const before = dt;
-      if (j.stage === 'out') { dt = drive(j, u, dt, 'main'); if (pathDone(u)) { j.stage = 'work'; u.mode = 'work'; } }
+      if (j.stage === 'out') { dt = drive(j, u, dt, 'main'); if (pathDone(u)) { j.stage = 'work'; u.mode = 'work'; if (j.cancelled) goHome(j); } }
       else if (j.stage === 'work') dt = work(j, u, dt);
-      else if (j.stage === 'unload') dt = unload(j, u, dt);
       else if (j.stage === 'home') { dt = drive(j, u, dt, 'main'); if (pathDone(u)) { u.mode = 'park'; j.stage = 'parked'; checkFinish(j); return; } }
       else return;
-      if (dt === before && sig === j.stage + u.mode + j.pos + (u.unl ? u.unl.phase : '')) break;
+      if (dt === before && sig === j.stage + u.mode + j.pos + j.bin.toFixed(4)) break;
     }
   }
+  function waitFor(j, u, reason, notifyKey) {
+    u.mode = 'wait'; j.reason = reason;
+    if (notifyKey && j._nk !== notifyKey + j.pos) { j._nk = notifyKey + j.pos; G.notify('⏳ ' + J.opName(j.op) + ' — ' + G.S.parcels[j.pid].name + ': ' + reason, 'warn', { key: notifyKey + '_' + j.uid, parcel: j.pid }); }
+  }
   function work(j, u, dt) {
-    if (j.pos >= j.order.length) {
-      // koniec pola: z przyczepą — przeładunek resztek, potem zjazd
-      if (j.bin > 0 && j.units.shuttle && j.units.shuttle.phase !== 'park') { u.mode = 'wait'; j.reason = 'Przeładunek na przyczepę'; return dt; }
-      completeWork(j); return dt;
+    const atEnd = j.pos >= j.order.length || j.cancelled;
+    const rcv = j.kind ? receiver(j) : null;
+    // --- przeładunek ślimakiem (kombajn stoi, rura rozłożona) ---
+    if (j.kind === 'bunker' && j.bin > 1e-6 && rcv && aligned(rcv, u) && !j.userPaused) {
+      u.mode = 'unload'; j.reason = 'Przeładunek na przyczepę';
+      rcv.receiving = true;
+      const free = Math.max(0, rcv.cap - rcv.load);
+      const step = Math.min(dt, j.bin / AUGER_TPH, free / AUGER_TPH);
+      const q = step * AUGER_TPH, f = j.bin > 0 ? Math.min(1, q / j.bin) : 0;
+      for (const id in j.binProd) { const x = j.binProd[id] * f; rcv.prod[id] = (rcv.prod[id] || 0) + x; j.binProd[id] -= x; }
+      rcv.load += q; j.bin -= q;
+      account(j, 'main', step, 'auger');
+      if (j.bin <= 1e-6 || rcv.load >= rcv.cap - 1e-6) {
+        if (j.bin <= 1e-6) { j.bin = 0; j.binProd = {}; }
+        release(j, rcv);
+      }
+      return dt - step;
+    }
+    if (atEnd) {
+      // kombajn nie zjeżdża z pola z ziarnem w zbiorniku
+      if (j.kind === 'bunker' && j.bin > 1e-6) { j.want = true; waitFor(j, u, 'Czeka na przyczepę — opróżnienie zbiornika przed zjazdem', 'drain'); return dt; }
+      if (j.cancelled) goHome(j); else completeWork(j);
+      return dt;
     }
     const b = blocked(j);
-    if (b) { u.mode = 'wait'; j.reason = b; return dt; }
-    if (j.binCap > 0 && j.bin >= j.binCap - 1e-6) {
-      if (j.units.shuttle) { u.mode = 'wait'; j.reason = 'Pełny zbiornik — czeka na przyczepę'; return dt; }
-      startUnload(j, u); return dt;
+    if (b) { waitFor(j, u, b); return dt; }
+    if (j.kind === 'bunker') {
+      const full = j.bin + j.lastOut > j.binCap + 1e-6;
+      if (j.bin >= j.binCap * CALL_AT || full) j.want = true;
+      if (full) { waitFor(j, u, 'Czeka na przyczepę — zbiornik pełny', 'binfull'); return dt; }
+    } else if (j.kind === 'continuous') {
+      if (!rcv || !aligned(rcv, u)) { j.want = true; waitFor(j, u, rcv ? 'Przyczepa podjeżdża do sieczkarni' : 'Czeka na przyczepę — sieczkarnia ładuje na bieżąco', rcv ? null : 'binfull'); return dt; }
+      rcv.receiving = true;
     }
     j.reason = '';
     if (!u.w) {
       const to = j.order[j.pos], dist = Math.hypot(G.tx(to) + 0.5 - u.x, G.ty(to) + 0.5 - u.y);
-      const tileH = HA / haHFor(j);
-      u.w = { to, fx: u.x, fy: u.y, t: 0, total: tileH + Math.max(0, dist - 1.2) / SPD_OFF };
+      u.w = { to, fx: u.x, fy: u.y, t: 0, total: HA / haHFor(j) + Math.max(0, dist - 1.2) / SPD_OFF };
     }
     u.mode = 'work';
     const w = u.w, tx = G.tx(w.to) + 0.5, ty = G.ty(w.to) + 0.5;
@@ -606,47 +759,12 @@
     account(j, 'main', step, 'work');
     if (w.t >= w.total - 1e-9) {
       const r = callWorkTile(j, w.to);
-      if (r.error) { u.mode = 'wait'; j.reason = r.error; return dt - step; }
+      if (r.error) { waitFor(j, u, r.error); return dt - step; }
       u.w = null; j.pos++; j.done++;
     }
     return dt - step;
   }
-  function unloadTarget(j) {
-    const id = j.impl ? def(j.impl) : def(j.power);
-    if (j.mode === 'root' || id.cat === 'potato_harvester' || id.cat === 'beet_harvester') {
-      const p = G.S.parcels[j.pid];
-      return { idx: p.entry >= 0 ? p.entry : j.order[0], pile: true };
-    }
-    return { idx: yardExit(), pile: false };
-  }
-  function startUnload(j, u) {
-    const t = unloadTarget(j);
-    u.unl = { phase: 'go', target: t.idx, pile: t.pile, resume: j.pos > 0 ? j.order[j.pos - 1] : tileOf(u), timer: 0 };
-    u.path = route(tileOf(u), t.idx, j.pid); u.pi = 0;
-    j.stage = 'unload';
-    j.reason = t.pile ? 'Wysypuje bunkier na pryzmę' : 'Jedzie rozładować zbiornik';
-  }
-  function unload(j, u, dt) {
-    const L = u.unl;
-    if (L.phase === 'go') { dt = drive(j, u, dt, 'main'); if (pathDone(u)) { L.phase = 'dump'; L.timer = UNLOAD_H; } return dt; }
-    if (L.phase === 'dump') {
-      u.mode = 'unload';
-      const s = Math.min(dt, L.timer); L.timer -= s;
-      if (L.timer <= 1e-9) {
-        deliverBin(j);
-        L.phase = 'back'; u.path = route(L.target, L.resume, j.pid); u.pi = 0;
-      }
-      return dt - s;
-    }
-    dt = drive(j, u, dt, 'main');
-    if (pathDone(u)) { j.stage = 'work'; u.unl = null; u.mode = 'work'; j.reason = ''; }
-    return dt;
-  }
   function completeWork(j) {
-    if (j.bin > 0 && (!j.units.shuttle || j.units.shuttle.phase === 'park')) {
-      const t = unloadTarget(j);
-      if (t.pile) deliverBin(j);   // ziemniaki/buraki na pryzmę; ziarno — rozładunek po powrocie na podwórze
-    }
     if (G.fields && G.fields.complete) { try { G.fields.complete(j.pid, j.op, j.params); } catch (e) { console.error('[complete]', e); } }
     G.emit('opDone', j.pid, j.op);
     const out = Object.keys(j.outTotal).map(id => (G.fmtQty(id, j.outTotal[id]).trim() + ' ' + ((G.PRODUCTS[id] && G.PRODUCTS[id].name) || id))).join(', ');
@@ -657,81 +775,101 @@
     const u = j.units.main;
     j.stage = 'home'; j.reason = j.cancelled ? 'Odwołane — wraca' : 'Wraca na podwórze';
     if (!u) return;
-    u.w = null; u.unl = null;
+    u.w = null;
     u.path = route(tileOf(u), home(j), j.pid); u.pi = 0;
   }
 
-  // ---------- przyczepa (odwóz plonu) ----------
-  function stepShuttle(j, dt) {
-    const s = j.units.shuttle, m = j.units.main;
-    if (!s || s.phase === 'park') return;
-    const yard = yardExit(), p = G.S.parcels[j.pid], standby = p.entry >= 0 ? p.entry : j.order[0];
-    const mainDone = j.stage === 'home' || j.stage === 'parked' || j.cancelled;
+  // ---------- przyczepy (odwóz plonu) ----------
+  function dispatch(j) {
+    const m = j.units.main;
+    if (!m || !j.want || j.stage !== 'work') return;
+    if (shuttles(j).some(s => s.phase === 'fetch' || s.phase === 'follow')) return;
+    const ready = shuttles(j).filter(s => s.phase === 'standby' && s.cap - s.load > Math.max(0.5, s.cap * 0.15) && helperOk(j, s))
+      .sort((a, b) => (b.cap - b.load) - (a.cap - a.load) || Math.hypot(a.x - m.x, a.y - m.y) - Math.hypot(b.x - m.x, b.y - m.y));
+    const s = ready[0];
+    if (!s) return;
+    s.phase = 'fetch'; s.path = routeNear(tileOf(s), tileOf(m), j.pid); s.pi = 0;
+  }
+  function helperOk(j, s) {
+    const st = j.sets[s.k];
+    if (!st || st.hired || j.contractor) return true;
+    return G.workers.available(st.helper, j.uid, false).ok;
+  }
+  function stepShuttles(j, dt) {
+    dispatch(j);
+    j.want = false;
+    for (const s of shuttles(j)) stepShuttle(j, s, dt);
+  }
+  function stepShuttle(j, s, dt) {
+    if (s.phase === 'park') return;
+    const m = j.units.main, st = j.sets[s.k];
+    const yard = setHome(j, st) === yardExit() ? yardExit() : yardExit();   // plon zawsze na podwórze gracza
+    const mainGone = j.stage === 'home' || j.stage === 'parked';
     for (let guard = 0; guard < 200 && dt > 1e-9; guard++) {
-      const sig = s.phase + s.pi, before = dt;
+      const sig = s.phase + s.pi + s.x.toFixed(3) + s.y.toFixed(3), before = dt;
       switch (s.phase) {
         case 'out': case 'back':
-          dt = drive(j, s, dt, 'shuttle'); if (pathDone(s)) s.phase = 'standby'; break;
+          dt = drive(j, s, dt, s.k); if (pathDone(s)) s.phase = 'standby'; break;
         case 'standby':
-          s.mode = 'wait';
-          if (s.load >= s.cap * 0.8 || (mainDone && s.load > 0)) { s.phase = 'toYard'; s.path = route(tileOf(s), yard, j.pid); s.pi = 0; }
-          else if (mainDone) { s.phase = 'home'; s.path = route(tileOf(s), yard, j.pid); s.pi = 0; }
-          else if (j.bin > 0 && (j.bin >= j.binCap * 0.7 || j.pos >= j.order.length)) { s.phase = 'fetch'; s.path = routeNear(tileOf(s), tileOf(m), j.pid); s.pi = 0; }
+          s.mode = 'wait'; s.receiving = false;
+          if (s.load >= s.cap * TRAILER_FULL || (mainGone && s.load > 0)) { s.phase = 'toYard'; s.path = route(tileOf(s), yard, j.pid); s.pi = 0; }
+          else if (mainGone) { s.phase = 'home'; s.path = route(tileOf(s), setHome(j, st), j.pid); s.pi = 0; }
           else return;
           break;
         case 'fetch':
-          dt = drive(j, s, dt, 'shuttle');
-          if (pathDone(s)) {
-            if (Math.hypot(s.x - m.x, s.y - m.y) <= 1.8 || j.stage !== 'work') {
-              const q = Math.min(j.bin, s.cap - s.load);
-              if (q > 0) {
-                const f = q / j.bin;
-                for (const id in j.binProd) { const x = j.binProd[id] * f; s.prod[id] = (s.prod[id] || 0) + x; j.binProd[id] -= x; }
-                s.load += q; j.bin -= q;
-                if (j.bin < 1e-6) { j.bin = 0; j.binProd = {}; }
-              }
-              s.phase = 'transfer'; s.timer = TRANSFER_H;
-            } else { s.path = routeNear(tileOf(s), tileOf(m), j.pid); s.pi = 0; if (!s.path.length) s.phase = 'standby'; }
-          }
+          if (mainGone) { s.phase = 'standby'; break; }
+          dt = drive(j, s, dt, s.k);
+          if (Math.hypot(s.x - m.x, s.y - m.y) <= 2.2) { s.phase = 'follow'; s.path = []; s.pi = 0; }
+          else if (pathDone(s)) { s.path = routeNear(tileOf(s), tileOf(m), j.pid); s.pi = 0; if (!s.path.length) s.phase = 'follow'; }
           break;
-        case 'transfer': {
-          s.mode = 'unload';
-          const st = Math.min(dt, s.timer); s.timer -= st; dt -= st;
-          if (s.timer <= 1e-9) s.phase = 'standby';
-          break;
+        case 'follow': {
+          if (mainGone) { s.phase = 'standby'; s.receiving = false; break; }
+          // jedzie równolegle po lewej stronie kombajnu/sieczkarni
+          const p = sidePoint(m), dx = p.x - s.x, dy = p.y - s.y, dist = Math.hypot(dx, dy);
+          const can = FOLLOW_SPD * dt;
+          if (dist > 0.05) turn(s, Math.atan2(dy, dx), Math.min(can, dist) * (dist > 0.4 ? 1 : 0.3));
+          if (dist <= 0.4) turn(s, m.angle, Math.max(0.05, Math.min(can, dist) + dt * 2));
+          if (can >= dist) { s.x = p.x; s.y = p.y; } else { s.x += dx / dist * can; s.y += dy / dist * can; }
+          s.mode = dist < 0.2 ? 'follow' : 'drive';
+          if (dist > 0.02) account(j, s.k, Math.min(dt, dist / FOLLOW_SPD), 'road');
+          return;   // czas zużyty — trzyma się kombajnu do zwolnienia
         }
         case 'toYard':
-          dt = drive(j, s, dt, 'shuttle'); if (pathDone(s)) { s.phase = 'dump'; s.timer = UNLOAD_H; } break;
+          dt = drive(j, s, dt, s.k); if (pathDone(s)) { s.phase = 'dump'; s.timer = UNLOAD_H; } break;
         case 'dump': {
           s.mode = 'unload';
-          const st = Math.min(dt, s.timer); s.timer -= st; dt -= st;
+          const t = Math.min(dt, s.timer); s.timer -= t; dt -= t;
           if (s.timer <= 1e-9) {
             deliver(s.prod); s.prod = {}; s.load = 0;
-            if (j.stage === 'home' || j.stage === 'parked' || j.cancelled) { s.phase = 'park'; s.mode = 'park'; checkFinish(j); return; }
-            s.phase = 'back'; s.path = route(yard, standby, j.pid); s.pi = 0;
+            if (j.stage === 'home' || j.stage === 'parked') {
+              if (setHome(j, st) === yardExit()) { s.phase = 'park'; s.mode = 'park'; checkFinish(j); return; }
+              s.phase = 'home'; s.path = route(tileOf(s), setHome(j, st), j.pid); s.pi = 0;
+            } else { s.phase = 'back'; s.path = route(tileOf(s), standbyOf(j), j.pid); s.pi = 0; }
           }
           break;
         }
         case 'home':
-          dt = drive(j, s, dt, 'shuttle'); if (pathDone(s)) { s.phase = 'park'; s.mode = 'park'; checkFinish(j); return; } break;
+          dt = drive(j, s, dt, s.k); if (pathDone(s)) { s.phase = 'park'; s.mode = 'park'; checkFinish(j); return; } break;
         default: return;
       }
-      if (dt === before && sig === s.phase + s.pi) break;
+      if (dt === before && sig === s.phase + s.pi + s.x.toFixed(3) + s.y.toFixed(3)) break;
     }
   }
 
   function checkFinish(j) {
     if (j.stage !== 'parked') return;
-    if (j.units.shuttle && j.units.shuttle.phase !== 'park') return;
+    if (shuttles(j).some(s => s.phase !== 'park')) return;
     finish(j, j.cancelled ? 'cancelled' : 'done');
   }
   function finish(j, status) {
-    if (j.bin > 0) deliverBin(j);
-    const s = j.units.shuttle;
-    if (s && s.load > 0) { deliver(s.prod); s.prod = {}; s.load = 0; }
+    if (j.bin > 1e-6) {   // nie powinno się zdarzyć (kombajn czeka na przyczepę); zabezpieczenie przed utratą danych
+      console.warn('[jobs] zbiornik niepusty przy zakończeniu', j.uid, j.bin);
+      deliver(j.binProd); j.bin = 0; j.binProd = {};
+    }
+    for (const s of shuttles(j)) if (s.load > 0) { deliver(s.prod); s.prod = {}; s.load = 0; }
     flushFuel(j);
     for (const uid of j.machines) { const m = G.machines.get(uid); if (m && m.busy === j.uid) m.busy = null; }
-    for (const wu of [j.worker, j.helper]) { const w = wu && G.workers.get(wu); if (w && w.busy === j.uid) w.busy = null; }
+    for (const wu of [j.worker].concat(j.helpers || [])) { const w = wu && G.workers.get(wu); if (w && w.busy === j.uid) w.busy = null; }
     j.status = status; j.finished = G.S.tick; j.reason = '';
     G.S.jobs.list = G.S.jobs.list.filter(x => x !== j);
     const h = Object.assign({}, j); delete h.order; delete h.units;
@@ -746,17 +884,18 @@
     for (const j of G.S.jobs.list.slice()) {
       try {
         if (j.status === 'queued') tryStart(j);
-        if (j.status === 'active') { stepMain(j, dtH); if (j.status === 'active') stepShuttle(j, dtH); }
+        if (j.status === 'active') { stepMain(j, dtH); if (j.status === 'active') stepShuttles(j, dtH); }
       } catch (e) { console.error('[jobs]', e); }
     }
   });
   G.on('tick', () => {
-    // ponowna próba po błędzie (np. brak nasion) / braku paliwa — co godzinę gry
+    // ponowna próba tankowania po braku paliwa — co godzinę gry
     for (const j of G.S.jobs.list) if (j.fuelPending > 0 && j.fuelTick >= 0 && j.fuelTick < G.S.tick) flushFuel(j);
   });
 
   // ===================== DLA GRAFIKI =====================
-  // [{ x, y, angle, parts:[{model, color}], working, dust, lights, kind: 'own'|'contractor'|'parked', unit, jobUid, uid?, label, waiting, fill?, inGarage? }]
+  // [{ x, y, angle, parts:[{model, color}], working, dust, lights, kind: 'own'|'contractor'|'transport'|'parked', unit: 'main'|'shuttle'|'parked',
+  //    jobUid, uid?, label, waiting, reason?, fill (0..1), unloading?, auger?: 'in'|'out', receiving?, inGarage?, broken? }]
   J.vehicles = function () {
     const out = [];
     if (!G.S || !G.S.jobs) return out;
@@ -774,19 +913,27 @@
         const parts = [{ model: pd.model, color: ctr ? ctr.color : pd.color }];
         if (id) parts.push({ model: id.model, color: ctr ? shade(ctr.color) : id.color });
         const working = j.stage === 'work' && u.mode === 'work';
-        out.push({
+        const v = {
           x: u.x, y: u.y, angle: u.angle, parts, working, dust: working && !!DUSTY[j.op] && !wet, lights: dark && u.mode !== 'wait',
           kind: ctr ? 'contractor' : 'own', unit: 'main', jobUid: j.uid, label: (ctr ? ctr.name + ': ' : '') + J.opName(j.op),
           waiting: u.mode === 'wait', reason: j.reason, fill: j.binCap ? Math.min(1, j.bin / j.binCap) : 0
-        });
+        };
+        if (j.kind) {
+          const rcv = receiver(j);
+          v.unloading = j.kind === 'bunker' ? u.mode === 'unload' : !!(working && rcv && rcv.receiving);
+          v.auger = j.stage === 'work' && (v.unloading || (j.kind === 'continuous' && rcv && aligned(rcv, u))) ? 'out' : 'in';
+        }
+        out.push(v);
       }
-      const s = j.units.shuttle;
-      if (s && s.phase !== 'park') {
-        const td = def(j.shTractor), rd = def(j.shTrailer);
+      for (const s of shuttles(j)) {
+        if (s.phase === 'park') continue;
+        const st = j.sets[s.k], td = G.MACHINES[st.tid], rd = G.MACHINES[st.rid];
+        const col = ctr ? ctr.color : st.hired ? TRANSPORT_FIRM.color : null;
         out.push({
-          x: s.x, y: s.y, angle: s.angle, parts: [{ model: td.model, color: td.color }, { model: rd.model, color: rd.color }],
-          working: false, dust: false, lights: dark && s.mode !== 'wait', kind: 'own', unit: 'shuttle', jobUid: j.uid,
-          label: 'Odwóz plonu', waiting: s.mode === 'wait', fill: s.cap ? Math.min(1, s.load / s.cap) : 0
+          x: s.x, y: s.y, angle: s.angle, parts: [{ model: td.model, color: col || td.color }, { model: rd.model, color: col ? shade(col) : rd.color }],
+          working: false, dust: false, lights: dark && s.mode !== 'wait', kind: ctr ? 'contractor' : st.hired ? 'transport' : 'own', unit: 'shuttle', jobUid: j.uid,
+          label: st.hired && !ctr ? TRANSPORT_FIRM.name + ': odwóz plonu' : 'Odwóz plonu', waiting: s.mode === 'wait',
+          fill: s.cap ? Math.min(1, s.load / s.cap) : 0, receiving: s.phase === 'follow' && !!s.receiving && aligned(s, u)
         });
       }
       for (const uid of j.machines) busySet.add(uid);
@@ -804,10 +951,12 @@
       if (busySet.has(m.uid) || m.busy) continue;
       const d = def(m), i = spots.length ? spots[k % spots.length] : yardExit(), lap = spots.length ? Math.floor(k / spots.length) : k;
       k++;
-      out.push({
+      const v = {
         x: G.tx(i) + 0.5 + lap * 0.25, y: G.ty(i) + 0.5, angle: Math.PI / 2, parts: [{ model: d.model, color: d.color }], working: false, dust: false, lights: false,
-        kind: 'parked', unit: 'parked', uid: m.uid, jobUid: null, label: d.name, waiting: false, inGarage: !!m.stored, broken: !!m.broken
-      });
+        kind: 'parked', unit: 'parked', uid: m.uid, jobUid: null, label: d.name, waiting: false, inGarage: !!m.stored, broken: !!m.broken, fill: 0
+      };
+      if (d.cat === 'combine' || d.cat === 'potato_harvester' || d.cat === 'beet_harvester' || d.cat === 'forage_harvester') { v.auger = 'in'; v.unloading = false; }
+      out.push(v);
     }
     return out;
   };
@@ -824,14 +973,26 @@
     if (!S.jobs || !Array.isArray(S.jobs.list)) S.jobs = { list: [], history: [] };
     if (!Array.isArray(S.jobs.history)) S.jobs.history = [];
     S.jobs.list = S.jobs.list.filter(j => j && S.parcels[j.pid] && (j.status === 'queued' || j.status === 'active'));
-    // spójność zajętości maszyn i ludzi
     const act = new Map();
-    for (const j of S.jobs.list) if (j.status === 'active') {
-      if (!j.units) j.units = { main: null, shuttle: null };
-      if (!j.units.main) { j.stage = 'home'; j.units.main = newUnit(home(j)); }
-      if (!Array.isArray(j.order)) j.order = [];
-      for (const uid of j.machines || []) act.set('m' + uid, j.uid);
-      for (const wu of [j.worker, j.helper]) if (wu) act.set('w' + wu, j.uid);
+    for (const j of S.jobs.list) {
+      // migracja z wersji z jedną przyczepą (shTractor/shTrailer/helper, units.shuttle)
+      if (!Array.isArray(j.sets)) {
+        j.sets = [];
+        if (j.shTractor && j.shTrailer) j.sets.push({ tractor: j.shTractor, trailer: j.shTrailer, helper: j.helper, tid: (M().get(j.shTractor) || {}).id || 'zagon_c60', rid: (M().get(j.shTrailer) || {}).id || 'przyczepa_4', hired: false });
+      }
+      if (!Array.isArray(j.helpers)) j.helpers = j.helper ? [j.helper] : [];
+      if (!j.units) j.units = { main: null, shuttles: [] };
+      if (!Array.isArray(j.units.shuttles)) { j.units.shuttles = j.units.shuttle ? [Object.assign(j.units.shuttle, { k: 0 })] : []; delete j.units.shuttle; }
+      for (const s of j.units.shuttles) { if (s.phase === 'transfer' || s.phase === 'fetch') s.phase = 'standby'; if (!s.prod) s.prod = {}; }
+      if (j.lastOut == null) j.lastOut = 0;
+      if (j.status === 'active') {
+        if (j.op === 'harvest' && !j.kind) j.kind = 'bunker';
+        if (j.stage === 'unload') { j.stage = 'work'; if (j.units.main) { j.units.main.unl = null; j.units.main.mode = 'work'; } }
+        if (!j.units.main) { j.stage = 'home'; j.units.main = newUnit(home(j)); }
+        if (!Array.isArray(j.order)) j.order = [];
+        for (const uid of j.machines || []) act.set('m' + uid, j.uid);
+        for (const wu of [j.worker].concat(j.helpers)) if (wu) act.set('w' + wu, j.uid);
+      }
     }
     for (const m of S.machines || []) m.busy = act.get('m' + m.uid) || null;
     for (const w of S.workers || []) w.busy = act.get('w' + w.uid) || null;
